@@ -10,5 +10,20 @@ export default defineNuxtConfig({
     '@nuxt/scripts',
     '@nuxt/test-utils',
     '@nuxt/ui'
-  ]
+  ],
+
+  components: {
+    global: true,
+    dirs: ['~/components']
+  },
+
+  nitro: {
+    publicAssets: [
+      {
+        baseURL: '/routes',
+        dir: 'public/routes',
+        maxAge: 60 * 60 * 24 * 7 // 7 days
+      }
+    ]
+  }
 })

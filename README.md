@@ -1,166 +1,277 @@
-# Sanpo App（散歩アプリ）基盤
+# Sanpo App（散歩アプリ）- Canvas Map Version
 
-このプロジェクトは「散歩アプリ」の基盤づくりを目的に、Web GUI 上で GeoJSON マップを表示し、プレイヤー（あなた自身）の移動・向き・速度を操作／可視化できるデバッグ環境を提供します。将来的には「音やイベントの発火」「ルート探索」などを拡張予定ですが、まずは技術的な基盤（地図表示＋プレイヤー動作）を最優先しています。
+このプロジェクトは「散歩アプリ」の基盤づくりを目的に、HTML5 Canvas上でOpenStreetMapタイルとGeoJSONデータを表示し、プレイヤー（あなた自身）の移動・向き・速度を操作／可視化できるデバッグ環境を提供します。
 
-## 直近の目標（ゴール）
+## 完成予定のアプリについて
 
-- Web GUI 上で GeoJSON マップを表示できること
-- プレイヤー操作（移動・回頭・速度）の可視化とデバッグができること
-- ゲーム演出ではなく、まずはインタラクティブに動作確認できる環境を整備すること
+**最終的には位置情報を利用した「散歩型アプリ／探索ゲーム」を目指しています。**
 
-## クイックスタート / 使い方
+完成するアプリは、位置情報を利用した「散歩型アプリ／探索ゲーム」です。
+プレイヤーは実際に歩きながら地図上を移動し、ルートをたどります。
+移動に応じて音楽や環境音が変化し、場所や状況に合わせてボイスやイベントが発生します。
+ルートから外れるとBGMが変化・消失し、方向感覚を音で表現します。
+分岐点では「右に行くか、まっすぐ進むか」といった選択肢が提示されます。
 
-1) 依存のインストール（任意のパッケージマネージャー）
+本アプリは「**オーディオゲーム**」として設計されており、視覚よりも音の変化やボイスによる誘導が主な体験要素です。
+天気や時間帯など現実の情報とも連動し、毎回違った体験が楽しめます。
+ただの地図アプリではなく「**音で導かれる冒険**」として散歩を体験できます。
+探索の途中にはポータルや秘密の場所があり、世界観の断片を感じられます。
+最終的には「**散歩そのものが冒険だった**」と実感できるように設計されます。
+
+### 現在の開発段階
+
+**このリポジトリは上記アプリの技術基盤（地図表示・プレイヤー移動・GeoJSON描画）部分です。**
+
+将来的に以下の機能が追加予定：
+- 📍 GPS/位置情報連携
+- 🎵 位置ベース音楽・環境音システム
+- 🗣️ ボイス・イベント発火システム  
+- 🎯 ルート逸脱検知・音響フィードバック
+- 🌟 ポータル・秘密エリア・分岐システム
+- 🌤️ 天気・時間帯連動
+- 📱 PWA・オフライン対応
+
+## 主な特徴
+
+- **Canvas レンダリング**: HTML5 Canvasによる高速で安定したマップ表示
+- **OpenStreetMap タイル**: タイル表示による詳細な地図情報
+- **GeoJSON サポート**: LineString（線）とPolygon（面）の描画
+- **直感的な操作**: WASD キーによる画面方向移動とマップ回転機能
+
+## クイックスタート
+
+### 1. 依存関係のインストール
 
 ```bash
-# npm
-npm install
-
-# pnpm
+# pnpm推奨
 pnpm install
 
-# yarn
-yarn install
-
-# bun
-bun install
+# または
+npm install
 ```
 
-2) 開発サーバを起動
+### 2. 開発サーバーを起動
 
 ```bash
-# npm
-npm run dev
-
-# pnpm
 pnpm dev
-
-# yarn
-yarn dev
-
-# bun
-bun run dev
+# または
+npm run dev
 ```
 
-3) ブラウザで以下を開くと、マップとHUD（操作UI）が表示されます
+### 3. ブラウザでアクセス
 
-- http://localhost:3000/walk?id=level
+- トップページ: http://localhost:3000/
+- サンプルマップ: http://localhost:3001/walk?id=level
 
-4) 独自のルートを試すには、`public/routes/<id>.geojson` を追加し、`/walk?id=<id>` にアクセスします。
-   詳細な手順は [`public/routes/README.md`](public/routes/README.md) を参照してください。
+## 操作方法
 
-## 基本機能
+### キーボード操作
+- **W**: マップの画面上方向に移動
+- **A**: マップの画面左方向に移動
+- **S**: マップの画面下方向に移動  
+- **D**: マップの画面右方向に移動
+- **Q**: マップを左に15度回転
+- **E**: マップを右に15度回転
+- **R**: プレイヤー位置をリセット
 
-- GeoJSON 表示: `public/routes/<id>.geojson` を青いラインで描画（LineString）
-- プレイヤー操作: Move/Pause、左右回頭、速度スライダー、ドラッグで位置調整、WASD/矢印キー操作
-- カメラ追従: プレイヤー位置へ `easeTo()` でセンタリング
-- HUD: 画面左下に操作パネルと現在座標を表示
+### マウス操作
+- **ホイール**: ズームイン/ズームアウト
+- **+/-ボタン**: ズーム操作
+- **ドラッグ**: プレイヤー位置をクリック位置に移動
 
-## Controls & Map Navigation
+### 特殊な動作
+- WASD移動は**マップの回転に追従**します（マップが回転していても画面方向に移動）
+- プレイヤーマーカーは常に北を向きます（赤い三角形）
 
-- **Move/Pause**: start or stop automatic movement along the current heading.
-- **⟲ / ⟳**: rotate the player heading by 5° increments.
-- **Speed slider**: set movement speed in meters per second.
-- **Drag marker**: reposition the player on the map.
-- **Keyboard**: arrow keys or WASD adjust speed and heading; space toggles movement.
-- **Map navigation**: drag to pan, scroll to zoom, and use standard MapLibre gestures for rotation and pitch.
+## 地図表示機能
 
-## 技術スタック（抜粋）
+### サポートするGeoJSON形式
 
-- Nuxt 4（TypeScript）
-- MapLibre GL（地図表示）
-- @turf/turf（移動計算: destination）
+#### LineString（線路・道路）
+```json
+{
+  "type": "LineString",
+  "coordinates": [
+    [経度, 緯度],
+    [経度, 緯度]
+  ]
+}
+```
+- **表示**: 青い線（4px太さ）
 
-## 主要ファイル
+#### Polygon（エリア・建物）
+```json
+{
+  "type": "Polygon", 
+  "coordinates": [[
+    [経度, 緯度],
+    [経度, 緯度],
+    [経度, 緯度],
+    [経度, 緯度]  // 最初と最後は同じ座標で閉じる
+  ]]
+}
+```
+- **表示**: 薄い緑色の塗りつぶし + 緑の輪郭線
 
-- `app/pages/walk.vue`: クエリの `id` から GeoJSON ルートを読み込み、`MapView` に渡すページエントリ
-- `components/MapView.vue`: ルートとプレイヤーマーカーを描画し、HUD 操作やカメラ追従を担当する地図コンポーネント
-- `composables/usePlayer.ts`: プレイヤー位置・向き・速度を管理し、移動ロジックを提供するコンポーザブル
-- `public/routes/level.geojson`: サンプルルート
-- `docs/` 内に仕様ドキュメント（Sanpo GeoMap 仕様 v1）
+### マップタイル
+- **ソース**: OpenStreetMap (tile.openstreetmap.org)
+- **ズームレベル**: 1-18（整数段階）
+- **タイルサイズ**: 256px
+- **投影法**: Web Mercator (EPSG:3857)
 
-## 今後の拡張（構想）
+## ファイル構成
 
-- 音やイベントの発火
-- ルート探索・スナップ移動
-- 初期 `fitBounds`、視野表現、PWA/オフライン
+```
+sampo-app/
+├── components/
+│   └── CanvasMapView.vue      # Canvas版マップコンポーネント
+├── composables/
+│   └── usePlayer.ts           # プレイヤー状態管理
+├── app/pages/
+│   ├── index.vue              # ホームページ
+│   └── walk.vue               # マップページ
+├── public/routes/
+│   ├── level.geojson          # サンプルGeoJSONデータ
+│   └── README.md              # GeoJSONデータの作成方法
+└── server/api/routes/
+    └── [id].get.ts            # GeoJSONファイル読み込みAPI
+```
+
+## 技術仕様
+
+### フロントエンド
+- **フレームワーク**: Nuxt 4.0.3 + Vue 3.5.18
+- **レンダリング**: HTML5 Canvas 2D Context
+- **地理計算**: Turf.js 7.2.0
+- **TypeScript**: 完全対応
+
+### マップエンジン
+- **タイル配信**: OpenStreetMap
+- **座標系**: WGS84 (EPSG:4326) → Web Mercator (EPSG:3857)
+- **描画**: Canvas 2D API
+- **キャッシュ**: Map<string, HTMLImageElement>による効率的なタイル管理
+
+## カスタムGeoJSONルートの追加
+
+### 1. GeoJSONファイルを作成
+`public/routes/my-route.geojson` を作成：
+
+```json
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {},
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [139.8145, 35.7713],
+          [139.8151, 35.7712]
+        ]
+      }
+    }
+  ]
+}
+```
+
+### 2. ブラウザでアクセス
+http://localhost:3001/walk?id=my-route
+
+詳細は `public/routes/README.md` を参照してください。
+
+## 開発・カスタマイズ
+
+### プレイヤー初期位置の変更
+`composables/usePlayer.ts` の以下の行を編集：
+
+```typescript
+const position = reactive<Position>({ lat: 35.77134, lng: 139.81465 })
+```
+
+### 移動速度の調整
+`usePlayer.ts` のキーハンドラーで移動距離を変更：
+
+```typescript
+moveInScreenDirection('up', 5) // 5メートル移動
+```
+
+### マップスタイルの変更
+`components/CanvasMapView.vue` の描画設定：
+
+```typescript
+// LineString の色・太さ
+ctx.strokeStyle = '#0066ff'
+ctx.lineWidth = 4
+
+// Polygon の塗りつぶし・輪郭
+ctx.fillStyle = 'rgba(0, 255, 0, 0.3)'
+ctx.strokeStyle = '#00aa00'
+```
+
+## パフォーマンス
+
+### 最適化済み機能
+- **タイル キャッシュ**: 一度読み込んだタイルを再利用
+- **効率的な描画**: Canvas 2D APIによる高速レンダリング
+- **メモリ管理**: 不要なタイルの自動削除
+
+### パフォーマンス指標
+- **フレームレート**: 60fps (requestAnimationFrame)
+- **タイル読み込み**: 非同期・並列処理
+- **メモリ使用量**: タイルキャッシュによる最適化
+
+## トラブルシューティング
+
+### よくある問題
+
+#### GeoJSONが表示されない
+1. ファイル形式がGeoJSON標準に準拠しているか確認
+2. 座標が [経度, 緯度] の順番になっているか確認
+3. ブラウザの開発者ツールでネットワークエラーがないか確認
+
+#### 移動が期待通りに動かない
+1. キーボードフォーカスがマップ上にあるか確認
+2. ブラウザのConsoleにエラーメッセージがないか確認
+
+#### タイルが読み込まれない
+1. インターネット接続を確認
+2. OpenStreetMapのサーバー状況を確認
+
+## ライセンス
+
+このプロジェクトはオープンソースです。
+
+### 使用している外部リソース
+- **地図タイル**: OpenStreetMap contributors (ODbL License)
+- **地理計算**: Turf.js (MIT License)
+- **フレームワーク**: Nuxt/Vue.js (MIT License)
 
 ---
 
-下記は Nuxt 公式のセットアップガイドです（プロジェクト運用の参考）。
+## 今後の拡張予定
 
-# Nuxt Minimal Starter
+### フェーズ1: 位置情報連携
+- [ ] GPS/位置情報API連携
+- [ ] リアルタイム位置トラッキング
+- [ ] 実世界座標とGeoJSONルートの照合
 
-Look at the [Nuxt documentation](https://nuxt.com/docs/getting-started/introduction) to learn more.
+### フェーズ2: オーディオシステム基盤
+- [ ] 位置ベース音楽・環境音再生
+- [ ] ボイス・効果音システム
+- [ ] 音響距離感・方向感の実装
 
-## Setup
+### フェーズ3: ゲーム要素
+- [ ] ルート逸脱検知とBGM変化
+- [ ] 分岐点での選択肢システム
+- [ ] ポータル・秘密エリア発見
+- [ ] 世界観・ストーリー要素
 
-Make sure to install dependencies:
+### フェーズ4: 環境連動・最適化
+- [ ] 天気API連動（音響変化）
+- [ ] 時間帯連動システム
+- [ ] PWA化・オフライン対応
+- [ ] パフォーマンス最適化
 
-```bash
-# npm
-npm install
-
-# pnpm
-pnpm install
-
-# yarn
-yarn install
-
-# bun
-bun install
-```
-
-## Development Server
-
-Start the development server on `http://localhost:3000`:
-
-```bash
-# npm
-npm run dev
-
-# pnpm
-pnpm dev
-
-# yarn
-yarn dev
-
-# bun
-bun run dev
-```
-
-## Production
-
-Build the application for production:
-
-```bash
-# npm
-npm run build
-
-# pnpm
-pnpm build
-
-# yarn
-yarn build
-
-# bun
-bun run build
-```
-
-Locally preview production build:
-
-```bash
-# npm
-npm run preview
-
-# pnpm
-pnpm preview
-
-# yarn
-yarn preview
-
-# bun
-bun run preview
-```
-
-Check out the [deployment documentation](https://nuxt.com/docs/getting-started/deployment) for more information.
+### 最終目標
+「**散歩そのものが冒険だった**」と実感できる、音で導かれる位置情報ベース探索ゲームの完成

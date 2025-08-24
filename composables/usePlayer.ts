@@ -12,86 +12,144 @@ interface Position {
   lng: number
 }
 
-export function usePlayer() {
-  const position = reactive<Position>({ lat: 0, lng: 0 })
+export function usePlayer(getMapBearing?: () => number) {
+  // GeoJSONデータの中心付近に配置
+  const position = reactive<Position>({ lat: 35.77134, lng: 139.81465 }) // 新しいGeoJSONの中心
   const heading = ref(0) // degrees
-  const speed = ref(0) // meters per second
-  const isMoving = ref(false)
-
-  let frameId: number | null = null
-  let lastTime: number | null = null
-
-  const step = (timestamp: number) => {
-    if (lastTime == null) {
-      lastTime = timestamp
-    }
-
-    if (isMoving.value) {
-      const dt = (timestamp - lastTime) / 1000 // seconds
-      const distKm = (speed.value * dt) / 1000 // convert m/s to km
-      const dest = destination([position.lng, position.lat], distKm, heading.value, { units: 'kilometers' })
-      const [lng, lat] = dest.geometry.coordinates
-      position.lat = lat
-      position.lng = lng
-    }
-
-    lastTime = timestamp
-    frameId = requestAnimationFrame(step)
-  }
+  const speed = ref(5) // meters per second (固定)
+  const isMoving = ref(false) // 使用しないが互換性のため残す
 
   function start() {
-    if (!isMoving.value) {
-      isMoving.value = true
-      if (frameId === null) {
-        frameId = requestAnimationFrame(step)
-      }
-    }
+    // 互換性のため残すが何もしない
+    isMoving.value = true
   }
 
   function pause() {
+    // 互換性のため残すが何もしない
     isMoving.value = false
   }
 
   const handleKeyDown = (event: KeyboardEvent) => {
+    // フォーム要素がフォーカスされている場合は無視
+    const target = event.target as HTMLElement
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') {
+      return
+    }
+
     switch (event.key) {
       case 'ArrowUp':
-        speed.value += 1
+      case 'w':
+      case 'W':
+        event.preventDefault()
+        // マップの画面上方向に移動
+        moveInScreenDirection('up', 5)
         break
       case 'ArrowDown':
-        speed.value = Math.max(0, speed.value - 1)
+      case 's':
+      case 'S':
+        event.preventDefault()
+        // マップの画面下方向に移動
+        moveInScreenDirection('down', 5)
         break
       case 'ArrowLeft':
-        heading.value = (heading.value - 5 + 360) % 360
+      case 'a':
+      case 'A':
+        event.preventDefault()
+        // マップの画面左方向に移動
+        moveInScreenDirection('left', 5)
         break
       case 'ArrowRight':
-        heading.value = (heading.value + 5) % 360
+      case 'd':
+      case 'D':
+        event.preventDefault()
+        // マップの画面右方向に移動
+        moveInScreenDirection('right', 5)
         break
-      case ' ':
-        if (isMoving.value) {
-          pause()
-        } else {
-          start()
-        }
+      case 'r':
+      case 'R':
+        event.preventDefault()
+        resetPosition()
         break
     }
   }
 
-  const updateHeading = (value: number) => {
-    heading.value = value
+  const moveForward = (meters: number) => {
+    const distKm = meters / 1000
+    const dest = destination([position.lng, position.lat], distKm, heading.value, { units: 'kilometers' })
+    const [lng, lat] = dest.geometry.coordinates
+    if (typeof lat === 'number' && typeof lng === 'number') {
+      position.lat = lat
+      position.lng = lng
+    }
   }
 
-  const updateSpeed = (value: number) => {
-    speed.value = value
+  const moveInDirection = (relativeAngle: number, meters: number) => {
+    const distKm = meters / 1000
+    const direction = (heading.value + relativeAngle + 360) % 360
+    // 移動はするが、向きは変更しない（左右移動時）
+    const dest = destination([position.lng, position.lat], distKm, direction, { units: 'kilometers' })
+    const [lng, lat] = dest.geometry.coordinates
+    if (typeof lat === 'number' && typeof lng === 'number') {
+      position.lat = lat
+      position.lng = lng
+    }
+  }
+
+  const moveInAbsoluteDirection = (absoluteAngle: number, meters: number) => {
+    const distKm = meters / 1000
+    // 絶対方向で移動（0度=北、90度=東、180度=南、270度=西）
+    const dest = destination([position.lng, position.lat], distKm, absoluteAngle, { units: 'kilometers' })
+    const [lng, lat] = dest.geometry.coordinates
+    if (typeof lat === 'number' && typeof lng === 'number') {
+      position.lat = lat
+      position.lng = lng
+    }
+  }
+
+  const moveInScreenDirection = (screenDirection: 'up' | 'down' | 'left' | 'right', meters: number) => {
+    const distKm = meters / 1000
+    const mapBearing = getMapBearing ? getMapBearing() : 0
+    
+    // 画面方向を地理的方向に変換
+    let geoDirection = 0
+    switch (screenDirection) {
+      case 'up':
+        geoDirection = 0 - mapBearing  // 北から現在のマップ回転を引く
+        break
+      case 'right':
+        geoDirection = 90 - mapBearing  // 東から現在のマップ回転を引く
+        break
+      case 'down':
+        geoDirection = 180 - mapBearing  // 南から現在のマップ回転を引く
+        break
+      case 'left':
+        geoDirection = 270 - mapBearing  // 西から現在のマップ回転を引く
+        break
+    }
+    
+    // 0-360度の範囲に正規化
+    geoDirection = (geoDirection + 360) % 360
+    
+    const dest = destination([position.lng, position.lat], distKm, geoDirection, { units: 'kilometers' })
+    const [lng, lat] = dest.geometry.coordinates
+    if (typeof lat === 'number' && typeof lng === 'number') {
+      position.lat = lat
+      position.lng = lng
+    }
+  }
+
+  const resetPosition = () => {
+    position.lat = 35.77134
+    position.lng = 139.81465
+    heading.value = 0
   }
 
   onMounted(() => {
-    frameId = requestAnimationFrame(step)
+    window.addEventListener('keydown', handleKeyDown)
   })
 
   onUnmounted(() => {
-    if (frameId !== null) {
-      cancelAnimationFrame(frameId)
-    }
+    window.removeEventListener('keydown', handleKeyDown)
   })
 
   return {
@@ -101,9 +159,7 @@ export function usePlayer() {
     isMoving,
     start,
     pause,
-    handleKeyDown,
-    updateHeading,
-    updateSpeed
+    handleKeyDown
   }
 }
 
