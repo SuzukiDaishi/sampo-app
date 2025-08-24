@@ -73,7 +73,7 @@ bun run dev
 
 ## 主要ファイル
 
-- `pages/walk.vue`: クエリの `id` から GeoJSON ルートを読み込み、`MapView` に渡すページエントリ
+- `app/pages/walk.vue`: クエリの `id` から GeoJSON ルートを読み込み、`MapView` に渡すページエントリ
 - `components/MapView.vue`: ルートとプレイヤーマーカーを描画し、HUD 操作やカメラ追従を担当する地図コンポーネント
 - `composables/usePlayer.ts`: プレイヤー位置・向き・速度を管理し、移動ロジックを提供するコンポーザブル
 - `public/routes/level.geojson`: サンプルルート
