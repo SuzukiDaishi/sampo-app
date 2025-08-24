@@ -1,3 +1,9 @@
+<!--
+  MapView component responsible for rendering the MapLibre map and HUD.
+  It draws the loaded GeoJSON route, displays a draggable player marker,
+  offers basic movement controls, and keeps the camera centered on the
+  player's position.
+-->
 <template>
   <div ref="mapContainer" class="map-view" />
   <div class="hud">

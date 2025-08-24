@@ -1,3 +1,8 @@
+<!--
+  Page for walking routes. Reads the `id` query parameter, fetches the
+  matching GeoJSON route from `public/routes`, and passes it to the
+  `MapView` component for display.
+-->
 <template>
   <div>
     <p v-if="!id">Missing or malformed id</p>

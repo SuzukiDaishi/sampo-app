@@ -46,7 +46,8 @@ bun run dev
 
 - http://localhost:3000/walk?id=level
 
-4) 独自のルートを試すには、`public/routes/<id>.geojson` を追加し、`/walk?id=<id>` にアクセスします
+4) 独自のルートを試すには、`public/routes/<id>.geojson` を追加し、`/walk?id=<id>` にアクセスします。
+   詳細な手順は [`public/routes/README.md`](public/routes/README.md) を参照してください。
 
 ## 基本機能
 
@@ -54,6 +55,15 @@ bun run dev
 - プレイヤー操作: Move/Pause、左右回頭、速度スライダー、ドラッグで位置調整、WASD/矢印キー操作
 - カメラ追従: プレイヤー位置へ `easeTo()` でセンタリング
 - HUD: 画面左下に操作パネルと現在座標を表示
+
+## Controls & Map Navigation
+
+- **Move/Pause**: start or stop automatic movement along the current heading.
+- **⟲ / ⟳**: rotate the player heading by 5° increments.
+- **Speed slider**: set movement speed in meters per second.
+- **Drag marker**: reposition the player on the map.
+- **Keyboard**: arrow keys or WASD adjust speed and heading; space toggles movement.
+- **Map navigation**: drag to pan, scroll to zoom, and use standard MapLibre gestures for rotation and pitch.
 
 ## 技術スタック（抜粋）
 
@@ -63,9 +73,9 @@ bun run dev
 
 ## 主要ファイル
 
-- `pages/walk.vue`: ルートIDをクエリから読み取り、GeoJSON を `MapView` に渡して表示
-- `components/MapView.vue`: 地図初期化、レイヤ追加、DOM マーカー、HUD、カメラ追従
-- `composables/usePlayer.ts`: プレイヤーの状態（位置・向き・速度）と移動ロジック（rAF）
+- `pages/walk.vue`: クエリの `id` から GeoJSON ルートを読み込み、`MapView` に渡すページエントリ
+- `components/MapView.vue`: ルートとプレイヤーマーカーを描画し、HUD 操作やカメラ追従を担当する地図コンポーネント
+- `composables/usePlayer.ts`: プレイヤー位置・向き・速度を管理し、移動ロジックを提供するコンポーザブル
 - `public/routes/level.geojson`: サンプルルート
 - `docs/` 内に仕様ドキュメント（Sanpo GeoMap 仕様 v1）
 
