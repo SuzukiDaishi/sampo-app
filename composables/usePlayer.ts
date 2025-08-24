@@ -61,7 +61,11 @@ export function usePlayer() {
         heading.value = (heading.value + 5) % 360
         break
       case ' ':
-        isMoving.value ? pause() : start()
+        if (isMoving.value) {
+          pause()
+        } else {
+          start()
+        }
         break
     }
   }
