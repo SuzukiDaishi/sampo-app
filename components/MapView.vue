@@ -25,10 +25,13 @@ import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
 import maplibregl from 'maplibre-gl'
 import { usePlayer } from '~/composables/usePlayer'
 
+const props = defineProps<{ routeData?: GeoJSON.GeoJSON }>()
+
 const mapContainer = ref<HTMLDivElement | null>(null)
 let map: maplibregl.Map | null = null
 let playerMarker: maplibregl.Marker | null = null
 let cameraFrame: number | null = null
+let mapLoaded = false
 
 const {
   position,
@@ -49,6 +52,30 @@ function rotate(delta: number) {
   updateHeading((heading.value + delta + 360) % 360)
 }
 
+function addRoute(data: GeoJSON.GeoJSON) {
+  if (!map) return
+  if (map.getSource('route')) {
+    (map.getSource('route') as maplibregl.GeoJSONSource).setData(data as any)
+  } else {
+    map.addSource('route', { type: 'geojson', data })
+    map.addLayer({
+      id: 'route',
+      type: 'line',
+      source: 'route',
+      paint: { 'line-color': '#0000ff', 'line-width': 4 }
+    })
+  }
+}
+
+watch(
+  () => props.routeData,
+  (val) => {
+    if (mapLoaded && val) {
+      addRoute(val)
+    }
+  }
+)
+
 onMounted(async () => {
   if (!mapContainer.value) return
 
@@ -59,21 +86,10 @@ onMounted(async () => {
     zoom: 15
   })
 
-  map.on('load', async () => {
-    try {
-      const res = await fetch('/routes/level.geojson')
-      if (res.ok) {
-        const data = await res.json()
-        map!.addSource('route', { type: 'geojson', data })
-        map!.addLayer({
-          id: 'route',
-          type: 'line',
-          source: 'route',
-          paint: { 'line-color': '#0000ff', 'line-width': 4 }
-        })
-      }
-    } catch (err) {
-      console.error('Failed to load route', err)
+  map.on('load', () => {
+    mapLoaded = true
+    if (props.routeData) {
+      addRoute(props.routeData)
     }
   })
 
