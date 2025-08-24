@@ -1,3 +1,9 @@
+/**
+ * Composable that tracks and updates the player's state.
+ * Handles position, heading, and speed, and moves the player
+ * over time using `requestAnimationFrame` so that UI and
+ * keyboard controls can manipulate movement consistently.
+ */
 import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import destination from '@turf/destination'
 
