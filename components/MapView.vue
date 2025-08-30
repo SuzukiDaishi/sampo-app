@@ -59,7 +59,7 @@ const {
   start,
   pause,
   handleKeyDown
-} = usePlayer()
+} = usePlayer(undefined, () => (map ? map.getZoom() : 19))
 
 // プレイヤーマーカーの位置を計算
 const playerMarkerStyle = computed(() => {
@@ -145,7 +145,7 @@ function handleMapKeyDown(event: KeyboardEvent) {
         const currentBearing = map.getBearing()
         console.log('Rotating left, current bearing:', currentBearing)
         map.easeTo({
-          bearing: currentBearing - 15,
+          bearing: currentBearing - 5,
           duration: 200
         })
       }
@@ -159,7 +159,7 @@ function handleMapKeyDown(event: KeyboardEvent) {
         const currentBearing = map.getBearing()
         console.log('Rotating right, current bearing:', currentBearing)
         map.easeTo({
-          bearing: currentBearing + 15,
+          bearing: currentBearing + 5,
           duration: 200
         })
       }
@@ -177,7 +177,7 @@ function resetPlayer() {
   if (map) {
     map.easeTo({
       center: [position.lng, position.lat],
-      zoom: 16,
+      zoom: 19,
       bearing: 0,
       duration: 1000
     })
@@ -293,7 +293,7 @@ onMounted(async () => {
     container: mapContainer.value,
     style: 'https://demotiles.maplibre.org/style.json',
     center: [position.lng, position.lat],
-    zoom: 16
+    zoom: 19
   })
 
   map.on('load', () => {
@@ -310,10 +310,8 @@ onMounted(async () => {
 
   const cameraStep = () => {
     if (!map) return
-    map.easeTo({
-      center: [position.lng, position.lat],
-      duration: 100
-    })
+    // Avoid piling animations each frame at high zoom; jump center instead
+    map.setCenter([position.lng, position.lat])
     cameraFrame = requestAnimationFrame(cameraStep)
   }
 
@@ -356,10 +354,10 @@ onUnmounted(() => {
 
 <style scoped>
 .map-view {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 100%;
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
 }
 
 .hud {
@@ -481,4 +479,3 @@ onUnmounted(() => {
   cursor: grabbing;
 }
 </style>
-

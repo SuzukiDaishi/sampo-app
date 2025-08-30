@@ -1,8 +1,7 @@
 /**
  * Composable that tracks and updates the player's state.
  * Handles position, heading, and speed, and moves the player
- * over time using `requestAnimationFrame` so that UI and
- * keyboard controls can manipulate movement consistently.
+ * via small discrete steps from keyboard controls.
  */
 import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import destination from '@turf/destination'
@@ -12,58 +11,60 @@ interface Position {
   lng: number
 }
 
-export function usePlayer(getMapBearing?: () => number) {
-  // GeoJSONデータの中心付近に配置
-  const position = reactive<Position>({ lat: 35.77134, lng: 139.81465 }) // 新しいGeoJSONの中心
+export function usePlayer(getMapBearing?: () => number, getZoom?: () => number) {
+  // Initial position is aligned with bundled GeoJSON example
+  const position = reactive<Position>({ lat: 35.77134, lng: 139.81465 })
   const heading = ref(0) // degrees
-  const speed = ref(5) // meters per second (固定)
-  const isMoving = ref(false) // 使用しないが互換性のため残す
+  const speed = ref(5) // meters per second (reserved for future use)
+  const isMoving = ref(false)
 
   function start() {
-    // 互換性のため残すが何もしない
     isMoving.value = true
   }
 
   function pause() {
-    // 互換性のため残すが何もしない
     isMoving.value = false
   }
 
   const handleKeyDown = (event: KeyboardEvent) => {
-    // フォーム要素がフォーカスされている場合は無視
+    // Ignore when typing in inputs
     const target = event.target as HTMLElement
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') {
       return
     }
+
+    // Zoom-scaled step: base 1m at z=19, doubles per zoom-out, halves per zoom-in.
+    const z = Math.max(0, Math.min(22, getZoom ? getZoom() : 19))
+    const baseStep = Math.pow(2, 19 - z) // z=19 => 1m
+    // Modifiers: Shift = coarse (x5), Alt = ultra-fine (x0.5)
+    let stepMeters = baseStep
+    if (event.shiftKey) stepMeters *= 5
+    if (event.altKey) stepMeters *= 0.5
 
     switch (event.key) {
       case 'ArrowUp':
       case 'w':
       case 'W':
         event.preventDefault()
-        // マップの画面上方向に移動
-        moveInScreenDirection('up', 5)
+        moveInScreenDirection('up', stepMeters)
         break
       case 'ArrowDown':
       case 's':
       case 'S':
         event.preventDefault()
-        // マップの画面下方向に移動
-        moveInScreenDirection('down', 5)
+        moveInScreenDirection('down', stepMeters)
         break
       case 'ArrowLeft':
       case 'a':
       case 'A':
         event.preventDefault()
-        // マップの画面左方向に移動
-        moveInScreenDirection('left', 5)
+        moveInScreenDirection('left', stepMeters)
         break
       case 'ArrowRight':
       case 'd':
       case 'D':
         event.preventDefault()
-        // マップの画面右方向に移動
-        moveInScreenDirection('right', 5)
+        moveInScreenDirection('right', stepMeters)
         break
       case 'r':
       case 'R':
@@ -86,7 +87,6 @@ export function usePlayer(getMapBearing?: () => number) {
   const moveInDirection = (relativeAngle: number, meters: number) => {
     const distKm = meters / 1000
     const direction = (heading.value + relativeAngle + 360) % 360
-    // 移動はするが、向きは変更しない（左右移動時）
     const dest = destination([position.lng, position.lat], distKm, direction, { units: 'kilometers' })
     const [lng, lat] = dest.geometry.coordinates
     if (typeof lat === 'number' && typeof lng === 'number') {
@@ -97,7 +97,6 @@ export function usePlayer(getMapBearing?: () => number) {
 
   const moveInAbsoluteDirection = (absoluteAngle: number, meters: number) => {
     const distKm = meters / 1000
-    // 絶対方向で移動（0度=北、90度=東、180度=南、270度=西）
     const dest = destination([position.lng, position.lat], distKm, absoluteAngle, { units: 'kilometers' })
     const [lng, lat] = dest.geometry.coordinates
     if (typeof lat === 'number' && typeof lng === 'number') {
@@ -109,27 +108,26 @@ export function usePlayer(getMapBearing?: () => number) {
   const moveInScreenDirection = (screenDirection: 'up' | 'down' | 'left' | 'right', meters: number) => {
     const distKm = meters / 1000
     const mapBearing = getMapBearing ? getMapBearing() : 0
-    
-    // 画面方向を地理的方向に変換
+
+    // Convert screen cardinal to geographic bearing accounting for map rotation
     let geoDirection = 0
     switch (screenDirection) {
       case 'up':
-        geoDirection = 0 - mapBearing  // 北から現在のマップ回転を引く
+        geoDirection = 0 - mapBearing
         break
       case 'right':
-        geoDirection = 90 - mapBearing  // 東から現在のマップ回転を引く
+        geoDirection = 90 - mapBearing
         break
       case 'down':
-        geoDirection = 180 - mapBearing  // 南から現在のマップ回転を引く
+        geoDirection = 180 - mapBearing
         break
       case 'left':
-        geoDirection = 270 - mapBearing  // 西から現在のマップ回転を引く
+        geoDirection = 270 - mapBearing
         break
     }
-    
-    // 0-360度の範囲に正規化
+
     geoDirection = (geoDirection + 360) % 360
-    
+
     const dest = destination([position.lng, position.lat], distKm, geoDirection, { units: 'kilometers' })
     const [lng, lat] = dest.geometry.coordinates
     if (typeof lat === 'number' && typeof lng === 'number') {
@@ -162,4 +160,3 @@ export function usePlayer(getMapBearing?: () => number) {
     handleKeyDown
   }
 }
-

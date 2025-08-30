@@ -49,9 +49,11 @@ const canvasRef = ref<HTMLCanvasElement | null>(null)
 let ctx: CanvasRenderingContext2D | null = null
 let animationFrame: number | null = null
 let isDragging = false
+let lastMouseX = 0
+let lastMouseY = 0
 
 // Map state
-const zoom = ref(16)
+const zoom = ref(19)
 const mapBearing = ref(0)
 const mapCenter = ref({ lat: 35.77134, lng: 139.81465 })
 
@@ -64,15 +66,33 @@ const {
   start,
   pause,
   handleKeyDown
-} = usePlayer(() => mapBearing.value)
+} = usePlayer(() => mapBearing.value, () => zoom.value)
 
 // Canvas dimensions
 const canvasWidth = ref(800)
 const canvasHeight = ref(600)
 
+function updateCanvasSize() {
+  if (!canvasRef.value) return
+  const dpr = Math.max(1, window.devicePixelRatio || 1)
+  const rect = canvasRef.value.getBoundingClientRect()
+  canvasWidth.value = Math.floor(rect.width)
+  canvasHeight.value = Math.floor(rect.height)
+  canvasRef.value.width = Math.floor(rect.width * dpr)
+  canvasRef.value.height = Math.floor(rect.height * dpr)
+  // Scale drawing so all coordinates can stay in CSS pixels
+  const context = canvasRef.value.getContext('2d')
+  if (context) {
+    context.setTransform(dpr, 0, 0, dpr, 0, 0)
+  }
+}
+
 // Tile cache
 const tileCache = new Map<string, HTMLImageElement>()
 const TILE_SIZE = 256
+// OSM raster tiles are served up to z=19.
+// For zoom > 19, draw z=19 tiles scaled up (client overzoom).
+const MAX_TILE_ZOOM = 19
 
 // Mercator projection
 function lngToTileX(lng: number, z: number): number {
@@ -133,32 +153,57 @@ async function loadTile(x: number, y: number, z: number): Promise<HTMLImageEleme
   }
 }
 
-// Render tiles
-async function renderTiles() {
+// Render tiles without awaiting network; draw cached tiles and fire off loads.
+function renderTiles() {
   if (!ctx) return
   
   const z = zoom.value
-  const centerTileX = lngToTileX(mapCenter.value.lng, z)
-  const centerTileY = latToTileY(mapCenter.value.lat, z)
-  
-  const tileRadius = 4
-  const startTileX = Math.floor(centerTileX - tileRadius)
-  const startTileY = Math.floor(centerTileY - tileRadius)
-  const endTileX = Math.ceil(centerTileX + tileRadius)
-  const endTileY = Math.ceil(centerTileY + tileRadius)
-  
-  for (let tileX = startTileX; tileX <= endTileX; tileX++) {
-    for (let tileY = startTileY; tileY <= endTileY; tileY++) {
-      if (tileX < 0 || tileY < 0 || tileX >= Math.pow(2, z) || tileY >= Math.pow(2, z)) {
+  const baseZ = Math.min(MAX_TILE_ZOOM, Math.floor(z))
+  const scale = Math.pow(2, z - baseZ)
+
+  // Center in current zoom coordinates
+  const centerTileX_z = lngToTileX(mapCenter.value.lng, z)
+  const centerTileY_z = latToTileY(mapCenter.value.lat, z)
+
+  // Determine tile coverage in baseZ coordinates
+  const centerTileX_base = lngToTileX(mapCenter.value.lng, baseZ)
+  const centerTileY_base = latToTileY(mapCenter.value.lat, baseZ)
+  const tilesX = Math.ceil(canvasWidth.value / (TILE_SIZE * scale)) + 2
+  const tilesY = Math.ceil(canvasHeight.value / (TILE_SIZE * scale)) + 2
+  const minX = Math.floor(centerTileX_base - tilesX / 2)
+  const maxX = Math.floor(centerTileX_base + tilesX / 2)
+  const minY = Math.floor(centerTileY_base - tilesY / 2)
+  const maxY = Math.floor(centerTileY_base + tilesY / 2)
+
+  const maxIndex = Math.pow(2, baseZ)
+
+  for (let x = minX; x <= maxX; x++) {
+    for (let y = minY; y <= maxY; y++) {
+      if (y < 0 || y >= maxIndex) continue
+      // Wrap X horizontally
+      let xWrapped = x
+      if (xWrapped < 0) xWrapped = (xWrapped % maxIndex + maxIndex) % maxIndex
+      if (xWrapped >= maxIndex) xWrapped = xWrapped % maxIndex
+
+      const key = `${baseZ}/${xWrapped}/${y}`
+      const img = tileCache.get(key)
+
+      // Kick off load if missing (no await)
+      if (!img) {
+        // Fire-and-forget
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
+        loadTile(xWrapped, y, baseZ)
         continue
       }
-      
-      const tile = await loadTile(tileX, tileY, z)
-      if (tile) {
-        const pixelX = (tileX - centerTileX) * TILE_SIZE + canvasWidth.value / 2
-        const pixelY = (tileY - centerTileY) * TILE_SIZE + canvasHeight.value / 2
-        ctx.drawImage(tile, pixelX, pixelY)
-      }
+
+      // Compute pixel position in current-zoom space
+      const xAtZ = x * Math.pow(2, z - baseZ)
+      const yAtZ = y * Math.pow(2, z - baseZ)
+      const pixelX = (xAtZ - centerTileX_z) * TILE_SIZE + canvasWidth.value / 2
+      const pixelY = (yAtZ - centerTileY_z) * TILE_SIZE + canvasHeight.value / 2
+
+      const size = TILE_SIZE * scale
+      ctx.drawImage(img, pixelX, pixelY, size, size)
     }
   }
 }
@@ -243,7 +288,7 @@ function renderPlayer() {
 }
 
 // Main render function
-async function render() {
+function render() {
   if (!ctx || !canvasRef.value) return
   
   // Clear canvas
@@ -259,7 +304,7 @@ async function render() {
   }
   
   // Render tiles and GeoJSON
-  await renderTiles()
+  renderTiles()
   renderGeoJSON()
   
   ctx.restore()
@@ -279,7 +324,7 @@ function handleWheel(event: WheelEvent) {
   event.preventDefault()
   
   if (event.deltaY < 0) {
-    zoom.value = Math.min(18, zoom.value + 1)
+    zoom.value = Math.min(22, zoom.value + 1)
   } else {
     zoom.value = Math.max(1, zoom.value - 1)
   }
@@ -296,19 +341,19 @@ function handleMapKeyDown(event: KeyboardEvent) {
     case 'Q':
       event.preventDefault()
       event.stopPropagation()
-      mapBearing.value = (mapBearing.value - 15 + 360) % 360
+      mapBearing.value = (mapBearing.value - 5 + 360) % 360
       break
     case 'e':
     case 'E':
       event.preventDefault()
       event.stopPropagation()
-      mapBearing.value = (mapBearing.value + 15) % 360
+      mapBearing.value = (mapBearing.value + 5) % 360
       break
   }
 }
 
 function zoomIn() {
-  zoom.value = Math.min(18, zoom.value + 1)
+  zoom.value = Math.min(22, zoom.value + 1)
 }
 
 function zoomOut() {
@@ -316,53 +361,57 @@ function zoomOut() {
 }
 
 function startDrag(event: MouseEvent) {
+  if (!canvasRef.value) return
   isDragging = true
   event.preventDefault()
-  
+
+  const rect = canvasRef.value.getBoundingClientRect()
+  lastMouseX = event.clientX - rect.left
+  lastMouseY = event.clientY - rect.top
+
   const handleMouseMove = (e: MouseEvent) => {
-    if (!isDragging) return
-    
-    const rect = canvasRef.value?.getBoundingClientRect()
-    if (!rect) return
-    
-    const canvasX = e.clientX - rect.left
-    const canvasY = e.clientY - rect.top
-    
-    const centerX = canvasWidth.value / 2
-    const centerY = canvasHeight.value / 2
-    
-    let worldX = canvasX - centerX
-    let worldY = canvasY - centerY
-    
+    if (!isDragging || !canvasRef.value) return
+    const r = canvasRef.value.getBoundingClientRect()
+    const x = e.clientX - r.left
+    const y = e.clientY - r.top
+
+    // Delta in canvas pixels
+    let dx = x - lastMouseX
+    let dy = y - lastMouseY
+    lastMouseX = x
+    lastMouseY = y
+
+    // Account for map rotation so drag feels like pulling the map
     if (mapBearing.value !== 0) {
       const angle = (-mapBearing.value * Math.PI) / 180
       const cos = Math.cos(angle)
       const sin = Math.sin(angle)
-      
-      const rotatedX = worldX * cos - worldY * sin
-      const rotatedY = worldX * sin + worldY * cos
-      
-      worldX = rotatedX
-      worldY = rotatedY
+      const rx = dx * cos - dy * sin
+      const ry = dx * sin + dy * cos
+      dx = rx
+      dy = ry
     }
-    
+
     const z = zoom.value
-    const centerTileX = lngToTileX(mapCenter.value.lng, z)
-    const centerTileY = latToTileY(mapCenter.value.lat, z)
-    
-    const clickTileX = centerTileX + worldX / TILE_SIZE
-    const clickTileY = centerTileY + worldY / TILE_SIZE
-    
-    position.lng = tileXToLng(clickTileX, z)
-    position.lat = tileYToLat(clickTileY, z)
+    // Convert center position to tile coords at current zoom
+    let tileX = lngToTileX(position.lng, z)
+    let tileY = latToTileY(position.lat, z)
+
+    // Move center opposite to drag to make map follow the cursor
+    tileX -= dx / TILE_SIZE
+    tileY -= dy / TILE_SIZE
+
+    // Update player position; view will remain centered on player
+    position.lng = tileXToLng(tileX, z)
+    position.lat = tileYToLat(tileY, z)
   }
-  
+
   const handleMouseUp = () => {
     isDragging = false
     document.removeEventListener('mousemove', handleMouseMove)
     document.removeEventListener('mouseup', handleMouseUp)
   }
-  
+
   document.addEventListener('mousemove', handleMouseMove)
   document.addEventListener('mouseup', handleMouseUp)
 }
@@ -377,14 +426,15 @@ onMounted(() => {
     return
   }
   
-  canvasRef.value.width = canvasWidth.value
-  canvasRef.value.height = canvasHeight.value
+  updateCanvasSize()
   
   start()
   animate()
   
   document.addEventListener('keydown', handleKeyDown)
   document.addEventListener('keydown', handleMapKeyDown)
+
+  window.addEventListener('resize', updateCanvasSize)
 })
 
 onUnmounted(() => {
@@ -395,6 +445,7 @@ onUnmounted(() => {
   
   document.removeEventListener('keydown', handleKeyDown)
   document.removeEventListener('keydown', handleMapKeyDown)
+  window.removeEventListener('resize', updateCanvasSize)
 })
 
 // Watch player position
@@ -409,15 +460,17 @@ watch(
 
 <style scoped>
 .canvas-map-container {
-  position: relative;
-  width: 800px;
-  height: 600px;
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
   background: #f0f8ff;
   overflow: hidden;
-  border: 2px solid #333;
 }
 
 .map-canvas {
+  width: 100%;
+  height: 100%;
   cursor: grab;
 }
 
