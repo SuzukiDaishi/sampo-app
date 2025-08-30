@@ -3,11 +3,12 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "nuxt build",
-    "dev": "nuxt dev",
+    "build": "npm run wasm:build && nuxt build",
+    "dev": "npm run wasm:build && nuxt dev",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
-    "postinstall": "nuxt prepare"
+    "postinstall": "nuxt prepare",
+    "wasm:build": "wasm-pack build rust/sampo_core --target web --out-dir ../../public/wasm --release"
   },
   "dependencies": {
     "@nuxt/content": "3.6.3",

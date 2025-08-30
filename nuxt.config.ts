@@ -17,6 +17,15 @@ export default defineNuxtConfig({
     dirs: ['~/components']
   },
 
+  app: {
+    head: {
+      script: [
+        // Preload and auto-initialize wasm glue on client via ESM module
+        { src: '/wasm/init.auto.js', type: 'module' }
+      ]
+    }
+  },
+
   nitro: {
     publicAssets: [
       {

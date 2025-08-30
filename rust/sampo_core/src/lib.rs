@@ -1,0 +1,303 @@
+use geo::algorithm::{contains::Contains, euclidean_distance::EuclideanDistance};
+use geo::{LineString, Point, Polygon};
+use geojson::{Feature, GeoJson, Value};
+use serde::Deserialize;
+use std::collections::HashMap;
+use wasm_bindgen::prelude::*;
+
+#[derive(Debug, Clone)]
+struct Road {
+    id: String,
+    line: LineString<f64>,
+}
+
+#[derive(Debug, Clone)]
+struct Area {
+    id: String,
+    poly: Polygon<f64>,
+}
+
+#[derive(Default)]
+struct State {
+    roads: Vec<Road>,
+    areas: Vec<Area>,
+}
+
+thread_local! {
+    static STATE: std::cell::RefCell<State> = std::cell::RefCell::new(State::default());
+}
+
+#[derive(Deserialize)]
+struct IdProp {
+    id: Option<String>,
+    name: Option<String>,
+}
+
+fn prop_id(props: &Option<serde_json::Map<String, serde_json::Value>>, fallback: &str) -> String {
+    if let Some(map) = props {
+        // Try `id` first
+        if let Some(v) = map.get("id").and_then(|v| v.as_str()) {
+            return v.to_string();
+        }
+        // Then `name`
+        if let Some(v) = map.get("name").and_then(|v| v.as_str()) {
+            return v.to_string();
+        }
+        // Then any string value
+        for (_k, v) in map.iter() {
+            if let Some(s) = v.as_str() {
+                if !s.is_empty() {
+                    return s.to_string();
+                }
+            }
+        }
+    }
+    fallback.to_string()
+}
+
+fn to_linestring(coords: &Vec<Vec<f64>>) -> Option<LineString<f64>> {
+    let mut pts = Vec::with_capacity(coords.len());
+    for c in coords {
+        if c.len() < 2 { return None; }
+        pts.push((c[0], c[1]));
+    }
+    Some(LineString::from(pts))
+}
+
+fn to_polygon(coords: &Vec<Vec<Vec<f64>>>) -> Option<Polygon<f64>> {
+    if coords.is_empty() { return None; }
+    let outer = to_linestring(&coords[0])?;
+    let holes = if coords.len() > 1 {
+        coords[1..].iter().filter_map(|ring| to_linestring(ring)).collect()
+    } else { Vec::new() };
+    Some(Polygon::new(outer, holes))
+}
+
+fn point_to_mercator(p: &Point<f64>) -> Point<f64> {
+    // Web Mercator (approx) in meters for small extents
+    let lon = p.x().to_radians();
+    let lat = p.y().to_radians();
+    let r = 6378137.0f64;
+    let x = r * lon;
+    let y = r * (0.5 * (std::f64::consts::PI / 4.0 + lat / 2.0)).tan().ln();
+    Point::new(x, y)
+}
+
+fn linestring_mercator(line: &LineString<f64>) -> LineString<f64> {
+    LineString::from(
+        line
+            .points()
+            .map(|p| {
+                let m = point_to_mercator(&p);
+                (m.x(), m.y())
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+#[wasm_bindgen]
+pub fn init_geojson(geojson_text: &str) -> Result<(), JsValue> {
+    let parsed = geojson_text
+        .parse::<GeoJson>()
+        .map_err(|e| JsValue::from_str(&format!("GeoJSON parse error: {e}")))?;
+
+    let mut state = State::default();
+
+    match parsed {
+        GeoJson::FeatureCollection(fc) => {
+            for (idx, feat) in fc.features.into_iter().enumerate() {
+                ingest_feature(&mut state, feat, idx);
+            }
+        }
+        GeoJson::Feature(feat) => {
+            ingest_feature(&mut state, feat, 0);
+        }
+        GeoJson::Geometry(_) => {
+            return Err(JsValue::from_str("Top-level Geometry is not supported; wrap in Feature/FeatureCollection"));
+        }
+    }
+
+    STATE.with(|cell| *cell.borrow_mut() = state);
+    Ok(())
+}
+
+fn ingest_feature(state: &mut State, feat: Feature, idx: usize) {
+    let id = prop_id(&feat.properties, &format!("feature-{idx}"));
+    match feat.geometry {
+        Some(geom) => match geom.value {
+            Value::LineString(coords) => {
+                if let Some(line) = to_linestring(&coords) {
+                    state.roads.push(Road { id, line });
+                }
+            }
+            Value::Polygon(coords) => {
+                if let Some(poly) = to_polygon(&coords) {
+                    state.areas.push(Area { id, poly });
+                }
+            }
+            Value::MultiLineString(lines) => {
+                for (i, ls) in lines.iter().enumerate() {
+                    if let Some(line) = to_linestring(ls) {
+                        state.roads.push(Road { id: format!("{id}:{i}"), line });
+                    }
+                }
+            }
+            Value::MultiPolygon(polys) => {
+                for (i, poly) in polys.iter().enumerate() {
+                    if let Some(p) = to_polygon(poly) {
+                        state.areas.push(Area { id: format!("{id}:{i}"), poly: p });
+                    }
+                }
+            }
+            _ => {}
+        },
+        None => {}
+    }
+}
+
+// ----- Core compute helpers (pure functions) -----
+fn compute_nearest_road(state: &State, lat: f64, lng: f64) -> (Option<String>, f64) {
+    let p = Point::new(lng, lat);
+    let p_m = point_to_mercator(&p);
+    let mut best_id: Option<String> = None;
+    let mut best_dist: f64 = f64::INFINITY;
+    for road in &state.roads {
+        let line_m = linestring_mercator(&road.line);
+        let d = p_m.euclidean_distance(&line_m);
+        if d < best_dist {
+            best_dist = d;
+            best_id = Some(road.id.clone());
+        }
+    }
+    (best_id, best_dist)
+}
+
+fn compute_nearest_road_id(state: &State, lat: f64, lng: f64) -> Option<String> {
+    let (id, _dist) = compute_nearest_road(state, lat, lng);
+    id
+}
+
+fn compute_area_ids(state: &State, lat: f64, lng: f64) -> Vec<String> {
+    let p = Point::new(lng, lat);
+    let mut ids = Vec::new();
+    for area in &state.areas {
+        if area.poly.contains(&p) {
+            ids.push(area.id.clone());
+        }
+    }
+    ids
+}
+
+#[wasm_bindgen]
+pub fn nearest_road_id(lat: f64, lng: f64) -> Option<String> {
+    STATE.with(|cell| {
+        let state = cell.borrow();
+        compute_nearest_road_id(&state, lat, lng)
+    })
+}
+
+#[wasm_bindgen]
+pub fn current_area_id(lat: f64, lng: f64) -> Option<String> {
+    STATE.with(|cell| {
+        let state = cell.borrow();
+        compute_area_ids(&state, lat, lng).into_iter().next()
+    })
+}
+
+#[wasm_bindgen]
+pub fn current_area_ids(lat: f64, lng: f64) -> String {
+    STATE.with(|cell| {
+        let state = cell.borrow();
+        let ids = compute_area_ids(&state, lat, lng);
+        serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_string())
+    })
+}
+
+#[wasm_bindgen]
+pub fn nearest_road_distance_m(lat: f64, lng: f64) -> f64 {
+    STATE.with(|cell| {
+        let state = cell.borrow();
+        let (id, dist) = compute_nearest_road(&state, lat, lng);
+        if id.is_some() { dist } else { f64::NAN }
+    })
+}
+
+#[wasm_bindgen]
+pub fn query_point(lat: f64, lng: f64) -> String {
+    STATE.with(|cell| {
+        let state = cell.borrow();
+        let (road, dist) = compute_nearest_road(&state, lat, lng);
+        let areas = compute_area_ids(&state, lat, lng);
+        let obj = serde_json::json!({
+            "roadId": road,
+            "areaIds": areas,
+            "distanceMeters": if dist.is_finite() { serde_json::Value::from(dist) } else { serde_json::Value::Null }
+        });
+        serde_json::to_string(&obj).unwrap_or_else(|_| "{}".to_string())
+    })
+}
+
+#[wasm_bindgen]
+pub fn summarize() -> String {
+    STATE.with(|cell| {
+        let st = cell.borrow();
+        format!("roads: {}, areas: {}", st.roads.len(), st.areas.len())
+    })
+}
+
+// Placeholder for future main loop and audio pipeline planning
+#[wasm_bindgen]
+pub fn planned_components() -> String {
+    // High-level plan for future: event system, audio graph, time scheduler.
+    let plan: HashMap<&str, &str> = HashMap::from([
+        ("events", "enter/leave area, near-road, waypoint, branching"),
+        ("audio", "bgm layers, sfx, voice cues, spatial panning"),
+        ("engine", "tick scheduler, time-based envelopes, state machine"),
+    ]);
+    serde_json::to_string(&plan).unwrap()
+}
+
+// ----- Tests -----
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_from_str(s: &str) -> State {
+        let parsed = s.parse::<GeoJson>().expect("parse geojson");
+        let mut st = State::default();
+        match parsed {
+            GeoJson::FeatureCollection(fc) => {
+                for (idx, feat) in fc.features.into_iter().enumerate() {
+                    ingest_feature(&mut st, feat, idx);
+                }
+            }
+            GeoJson::Feature(feat) => ingest_feature(&mut st, feat, 0),
+            GeoJson::Geometry(_) => panic!("Top-level Geometry not supported"),
+        }
+        st
+    }
+
+    #[test]
+    fn test_query_inside_start_area() {
+        let s = include_str!("../../../public/routes/level.geojson");
+        let st = state_from_str(s);
+        let lat = 35.77128;
+        let lng = 139.81470;
+        let areas = super::compute_area_ids(&st, lat, lng);
+        assert!(areas.contains(&"start".to_string()), "expected to contain 'start', got {:?}", areas);
+        let road = super::compute_nearest_road_id(&st, lat, lng);
+        assert!(road.is_some(), "nearest road should exist");
+    }
+
+    #[test]
+    fn test_query_outside_any_area() {
+        let s = include_str!("../../../public/routes/level.geojson");
+        let st = state_from_str(s);
+        let lat = 35.77134;
+        let lng = 139.81465;
+        let areas = super::compute_area_ids(&st, lat, lng);
+        assert!(areas.is_empty(), "expected empty areas at initial point, got {:?}", areas);
+        let road = super::compute_nearest_road_id(&st, lat, lng);
+        assert!(road.is_some(), "nearest road should exist");
+    }
+}

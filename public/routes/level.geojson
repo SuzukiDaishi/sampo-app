@@ -3,7 +3,9 @@
   "features": [
     {
       "type": "Feature",
-      "properties": {},
+      "properties": {
+        "id": "start"
+      },
       "geometry": {
         "coordinates": [
           [
@@ -34,7 +36,9 @@
     },
     {
       "type": "Feature",
-      "properties": {},
+      "properties": {
+        "id": "root1"
+      },
       "geometry": {
         "coordinates": [
           [
@@ -51,7 +55,9 @@
     },
     {
       "type": "Feature",
-      "properties": {},
+      "properties": {
+        "id": "root2"
+      },
       "geometry": {
         "coordinates": [
           [
@@ -80,7 +86,9 @@
     },
     {
       "type": "Feature",
-      "properties": {},
+      "properties": {
+        "id": "root3"
+      },
       "geometry": {
         "coordinates": [
           [
@@ -97,7 +105,9 @@
     },
     {
       "type": "Feature",
-      "properties": {},
+      "properties": {
+        "id": "goal"
+      },
       "geometry": {
         "coordinates": [
           [

@@ -35,6 +35,14 @@
           R: Reset Position
         </small>
       </div>
+      <div class="wasm-info">
+        <div class="wasm-row"><strong>Nearest road:</strong>
+          <template v-if="nearestRoadId">{{ nearestRoadId }}</template>
+          <template v-else>-</template>
+          <template v-if="nearestRoadDist != null"> ({{ nearestRoadDist.toFixed(1) }} m)</template>
+        </div>
+        <div class="wasm-row"><strong>Area IDs:</strong> {{ currentAreaIds.length ? currentAreaIds.join(', ') : '-' }}</div>
+      </div>
     </div>
   </div>
 </template>
@@ -42,6 +50,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { usePlayer } from '../composables/usePlayer'
+import { useSampoCore } from '../composables/useSampoCore'
 
 const props = defineProps<{ routeData?: GeoJSON.GeoJSON }>()
 
@@ -56,6 +65,25 @@ let lastMouseY = 0
 const zoom = ref(19)
 const mapBearing = ref(0)
 const mapCenter = ref({ lat: 35.77134, lng: 139.81465 })
+
+// WASM query debug info
+const nearestRoadId = ref<string | null>(null)
+const nearestRoadDist = ref<number | null>(null)
+const currentAreaIds = ref<string[]>([])
+const wasmReady = ref(false)
+const core = useSampoCore()
+
+async function updateWasmQuery() {
+  try {
+    const { roadId, areaIds, distanceMeters } = await core.query(position.lat, position.lng)
+    nearestRoadId.value = roadId
+    currentAreaIds.value = areaIds
+    nearestRoadDist.value = distanceMeters ?? null
+  } catch (e) {
+    // leave previous values; optional console for deep debug
+    console.warn('[WASM] query failed', e)
+  }
+}
 
 // Player state
 const {
@@ -435,6 +463,19 @@ onMounted(() => {
   document.addEventListener('keydown', handleMapKeyDown)
 
   window.addEventListener('resize', updateCanvasSize)
+
+  // Initialize WASM with route data if provided and run first query
+  ;(async () => {
+    try {
+      if (props.routeData) {
+        await core.init(props.routeData as any)
+      }
+      await updateWasmQuery()
+      wasmReady.value = true
+    } catch (e) {
+      console.warn('[WASM] init in CanvasMapView failed', e)
+    }
+  })()
 })
 
 onUnmounted(() => {
@@ -453,8 +494,33 @@ watch(
   () => [position.lat, position.lng],
   () => {
     mapCenter.value = { lat: position.lat, lng: position.lng }
+    scheduleQuery()
   },
   { deep: true }
+)
+
+let queryTimer: number | null = null
+function scheduleQuery() {
+  if (queryTimer !== null) return
+  queryTimer = window.setTimeout(async () => {
+    queryTimer = null
+    await updateWasmQuery()
+  }, 120)
+}
+
+// Re-init WASM when routeData changes
+watch(
+  () => props.routeData,
+  async (val) => {
+    if (val) {
+      try {
+        await core.init(val as any)
+        await updateWasmQuery()
+      } catch (e) {
+        console.warn('[WASM] re-init failed', e)
+      }
+    }
+  }
 )
 </script>
 
@@ -540,5 +606,16 @@ watch(
   font-size: 11px;
   color: #888;
   line-height: 1.3;
+}
+
+.wasm-info {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed #ddd;
+  font-size: 11px;
+  color: #444;
+}
+.wasm-row {
+  margin-top: 2px;
 }
 </style>

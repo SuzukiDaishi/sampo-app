@@ -1,4 +1,4 @@
-# Sanpo App（散歩アプリ）- Canvas Map Version
+﻿# Sanpo App（散歩アプリ）- Canvas Map Version
 
 このプロジェクトは「散歩アプリ」の基盤づくりを目的に、HTML5 Canvas上でOpenStreetMapタイルとGeoJSONデータを表示し、プレイヤー（あなた自身）の移動・向き・速度を操作／可視化できるデバッグ環境を提供します。
 
@@ -38,6 +38,13 @@
 - **GeoJSON サポート**: LineString（線）とPolygon（面）の描画
 - **直感的な操作**: WASD キーによる画面方向移動とマップ回転機能
 
+補足（現行デバッグ実装）
+- フルスクリーン表示（Canvas / MapLibre）と常時プレイヤー中央追従
+- ズーム連動の移動幅（z=19で1m、縮小で×2、拡大で×0.5）
+  - Shift=×5、Alt=×0.5 で微調整
+- 回転は5°ステップ（Q/E）
+- z>19はz=19タイルを拡大して表示（最大22まで表示）
+
 ## クイックスタート
 
 ### 1. 依存関係のインストール
@@ -61,23 +68,24 @@ npm run dev
 ### 3. ブラウザでアクセス
 
 - トップページ: http://localhost:3000/
-- サンプルマップ: http://localhost:3001/walk?id=level
+- サンプルマップ: http://localhost:3000/walk?id=level
 
 ## 操作方法
 
 ### キーボード操作
-- **W**: マップの画面上方向に移動
+- **W**: マップの画面上方向に移動（ズームに応じて距離自動調整）
 - **A**: マップの画面左方向に移動
 - **S**: マップの画面下方向に移動  
 - **D**: マップの画面右方向に移動
-- **Q**: マップを左に15度回転
-- **E**: マップを右に15度回転
+- 補助キー: Shift=粗く（×5）, Alt=細かく（×0.5）
+- **Q**: マップを左に5度回転
+- **E**: マップを右に5度回転
 - **R**: プレイヤー位置をリセット
 
 ### マウス操作
 - **ホイール**: ズームイン/ズームアウト
 - **+/-ボタン**: ズーム操作
-- **ドラッグ**: プレイヤー位置をクリック位置に移動
+- **ドラッグ（Canvas）**: マップを引っ張るようにパン（プレイヤーは常に中央）
 
 ### 特殊な動作
 - WASD移動は**マップの回転に追従**します（マップが回転していても画面方向に移動）
@@ -115,18 +123,40 @@ npm run dev
 
 ### マップタイル
 - **ソース**: OpenStreetMap (tile.openstreetmap.org)
-- **ズームレベル**: 1-18（整数段階）
+- **ズームレベル**: 1–22（z>19はz=19タイルを拡大表示）
 - **タイルサイズ**: 256px
 - **投影法**: Web Mercator (EPSG:3857)
+
+## ルートデータ（GeoJSON）
+
+- 配置場所: `public/routes/<id>.geojson`
+- 取得先（API）: `/api/routes/:id`（サーバー: `server/api/routes/[id].get.ts`）
+- 座標順序: `[経度, 緯度]`（WGS84 / EPSG:4326）
+
+### Feature ID 仕様（重要）
+- 各 Feature の `properties.id` は参照用の一意なID（文字列）として扱います。
+  - 道（LineString）: 例）`"root1"`, `"root2"`, `"root3"`
+  - エリア（Polygon）: 例）`"start"`, `"goal"`（将来: `"battle"`, `"notify"` など）
+- 複数形状（`MultiLineString`/`MultiPolygon`）は、それぞれ `id:part-index` で分割登録されます（例: `root:0`, `root:1`）。
+- `properties.id` が無い場合はフォールバックとして `properties.name`、それも無ければ `feature-<index>` を自動採番（Rustコア取り込み仕様）。
+
+サンプル `public/routes/level.geojson` では、以下のIDが付与されています。
+- Polygon（エリア）: `start`, `goal`
+- LineString（道）: `root1`, `root2`, `root3`
+
+これらのIDは Wasm コアの戻り値として使用されます。
+- `nearest_road_id(lat,lng)` → 最も近い道の `id`（例: `root2`）
+- `current_area_id(lat,lng)` → 現在位置が含まれるエリアの `id`（例: `start`/`goal`）
 
 ## ファイル構成
 
 ```
 sampo-app/
 ├── components/
-│   └── CanvasMapView.vue      # Canvas版マップコンポーネント
+│   ├── CanvasMapView.vue      # Canvas版マップコンポーネント
+│   └── MapView.vue            # MapLibre版（代替表示）
 ├── composables/
-│   └── usePlayer.ts           # プレイヤー状態管理
+│   └── usePlayer.ts           # プレイヤー状態管理（ズーム連動の移動幅）
 ├── app/pages/
 │   ├── index.vue              # ホームページ
 │   └── walk.vue               # マップページ
@@ -140,8 +170,8 @@ sampo-app/
 ## 技術仕様
 
 ### フロントエンド
-- **フレームワーク**: Nuxt 4.0.3 + Vue 3.5.18
-- **レンダリング**: HTML5 Canvas 2D Context
+- **フレームワーク**: Nuxt 4 + Vue 3
+- **レンダリング**: HTML5 Canvas 2D Context（MapLibre 代替あり）
 - **地理計算**: Turf.js 7.2.0
 - **TypeScript**: 完全対応
 
@@ -149,7 +179,7 @@ sampo-app/
 - **タイル配信**: OpenStreetMap
 - **座標系**: WGS84 (EPSG:4326) → Web Mercator (EPSG:3857)
 - **描画**: Canvas 2D API
-- **キャッシュ**: Map<string, HTMLImageElement>による効率的なタイル管理
+- **キャッシュ**: Map<string, HTMLImageElement> によるタイル管理
 
 ## カスタムGeoJSONルートの追加
 
@@ -176,7 +206,7 @@ sampo-app/
 ```
 
 ### 2. ブラウザでアクセス
-http://localhost:3001/walk?id=my-route
+http://localhost:3000/walk?id=my-route
 
 詳細は `public/routes/README.md` を参照してください。
 
@@ -189,14 +219,20 @@ http://localhost:3001/walk?id=my-route
 const position = reactive<Position>({ lat: 35.77134, lng: 139.81465 })
 ```
 
-### 移動速度の調整
-`usePlayer.ts` のキーハンドラーで移動距離を変更：
+### 移動距離（歩幅）の調整
+`usePlayer.ts` のキーハンドラーでズーム連動の歩幅を変更できます：
 
 ```typescript
-moveInScreenDirection('up', 5) // 5メートル移動
+// baseStep は z=19 で 1m、拡大で 0.5m、縮小で 2m の指数スケール
+const z = getZoom ? getZoom() : 19
+const baseStep = Math.pow(2, 19 - z)
+// 修飾キー倍率（例）
+let stepMeters = baseStep
+if (event.shiftKey) stepMeters *= 5
+if (event.altKey) stepMeters *= 0.5
 ```
 
-### マップスタイルの変更
+### マップスタイルの変更（Canvas）
 `components/CanvasMapView.vue` の描画設定：
 
 ```typescript
@@ -213,13 +249,12 @@ ctx.strokeStyle = '#00aa00'
 
 ### 最適化済み機能
 - **タイル キャッシュ**: 一度読み込んだタイルを再利用
-- **効率的な描画**: Canvas 2D APIによる高速レンダリング
-- **メモリ管理**: 不要なタイルの自動削除
+- **非同期待ちを排除**: 描画フレーム内ではキャッシュ済みのみ描画、未ロードは非同期で取得
+- **オーバーズーム**: z>19 は z=19 を拡大して安定表示
 
 ### パフォーマンス指標
 - **フレームレート**: 60fps (requestAnimationFrame)
 - **タイル読み込み**: 非同期・並列処理
-- **メモリ使用量**: タイルキャッシュによる最適化
 
 ## トラブルシューティング
 
@@ -275,3 +310,72 @@ ctx.strokeStyle = '#00aa00'
 
 ### 最終目標
 「**散歩そのものが冒険だった**」と実感できる、音で導かれる位置情報ベース探索ゲームの完成
+
+## Rust→Wasm コア（ゲーム基盤）
+
+本プロジェクトには、ゲームコアの試作として Rust 製の Wasm モジュールを同梱しています。
+
+- ソース: `rust/sampo_core/`
+- ビルド成果物の配置先: `public/wasm/`
+- 参照方法（例）: フロント側で `import("/wasm/sampo_core.js")` し、`init_geojson`, `nearest_road_id`, `current_area_id` を呼び出し
+
+### 提供API（暫定）
+- `init_geojson(json: string)`: GeoJSONを読み込み、道路（LineString）・エリア（Polygon）をインデックス化
+- `nearest_road_id(lat: number, lng: number): string | undefined`: 現在地点に最も近い道路IDを返却
+- `nearest_road_distance_m(lat: number, lng: number): number`: 最も近い道路までの最短距離（m）。該当なしは `NaN`
+- `current_area_id(lat: number, lng: number): string | undefined`: 現在地点が含まれるエリアIDを返却
+- `summarize(): string`: 取り込んだ要素数の要約
+- `current_area_ids(lat: number, lng: number): string`（JSON配列）: 現在地点が含まれる全エリアIDを返却
+- `query_point(lat: number, lng: number): string`（JSON）: `{ roadId: string|null, areaIds: string[], distanceMeters: number|null }`
+
+GeoJSON の `properties.id`（または `name`）を参照用IDとして使用します。未指定の場合は `feature-<index>` を採番します。
+
+TypeScript ラッパ（composables/useSampoCore.ts）
+```ts
+import { useSampoCore } from '~/composables/useSampoCore'
+
+const core = useSampoCore()
+await core.init(routeGeoJSON)
+
+const { roadId, areaIds, distanceMeters } = await core.query(35.77134, 139.81465)
+console.log(roadId, areaIds, distanceMeters) // 例: 'root2', [], 12.3
+
+// 距離だけを個別に取りたい場合
+const d = core ? (await (async () => mod.nearest_road_distance_m(35.77134, 139.81465))()) : null
+```
+
+### ビルド前提
+1. Rust ツールチェーン（stable）
+2. wasm-pack（https://rustwasm.github.io/wasm-pack/）
+
+### ビルド手順
+```bash
+# Wasm をビルドして public/wasm に出力
+npm run wasm:build
+
+# Nuxt を起動（事前に wasm:build が走ります）
+npm run dev
+```
+
+将来的には、イベント／音声再生（BGMレイヤ、効果音、ボイス）、状態遷移、分岐などのメインロジックを Rust 側に追加予定です。
+
+### 初期化と読み込み（Nuxt側）
+- Wasm生成物は `public/wasm/` に配置（`npm run wasm:build`）
+- Nuxtの`head`で `public/wasm/init.auto.js` を `type="module"` で読み込み、自動初期化します
+  - 参照: `nuxt.config.ts` に `app.head.script: [ { src: '/wasm/init.auto.js', type: 'module' } ]`
+- SSR中はスタブが返るため、実処理はクライアントで動作します（コンソールに `summary: server` が表示されるのは想定どおり）
+
+### デバッグHUD（Canvas）
+- HUDに以下を表示（`components/CanvasMapView.vue`）
+  - 現在座標／向き／ズーム／地図ベアリング
+  - Nearest road: 近い道IDと線までの最短距離（m）
+  - Area IDs: 現在位置が含まれる全エリアID
+- プレイヤー移動時に約120ms間隔で再計算してWasmに問い合わせます
+- ルートデータ変更時は再初期化→再計算します
+
+### テスト（Rust）
+- `cargo test --manifest-path rust/sampo_core/Cargo.toml`
+  - `public/routes/level.geojson` を読み込み、
+    - startエリア内で areaIds に `start` を含むこと
+    - 初期座標で areaIds が空かつ最近道路が取得できること
+  を検証
