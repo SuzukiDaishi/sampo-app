@@ -147,6 +147,27 @@ export function useSampoCore() {
       }
       return { roadId: r, areaIds: areas, distanceMeters: dist }
     },
+    // ---- Game bridge (Rust側へ移譲するための雛形) ----
+    async gameLoadProfile(json: any): Promise<void> {
+      await ensureLoaded()
+      const txt = typeof json === 'string' ? json : JSON.stringify(json)
+      try { mod.game_load_profile(txt) } catch (e) { console.warn('[WASM][game] load_profile failed', e) }
+    },
+    async gameReset(): Promise<void> {
+      await ensureLoaded()
+      try { mod.game_reset() } catch (e) { console.warn('[WASM][game] reset failed', e) }
+    },
+    async gameTick(lat: number, lng: number, dtMs: number): Promise<any[]> {
+      await ensureLoaded()
+      try {
+        const s: string = mod.game_tick(lat, lng, dtMs >>> 0)
+        const arr = JSON.parse(s)
+        return Array.isArray(arr) ? arr : []
+      } catch (e) {
+        console.warn('[WASM][game] tick failed', e)
+        return []
+      }
+    },
     summarize(): string {
       if (!initialized) return 'not-initialized'
       return mod.summarize()

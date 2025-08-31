@@ -17,11 +17,48 @@ export function useAudioOrchestrator(): Orchestrator {
   const dbg = (...a: any[]) => console.info('[AUDIO][orchestrator]', ...a)
   let initialized = false
   const loaded = new Set<string>()
-  let ducking = false
-  let lastRoad: string | null = null
-  let startPlayed = false
-  let goalPlayed = false
-  let activeBgmTrackId: string | null = null
+
+  // Lazily load wasm orchestrator if present
+  let wasmMod: any | null = null
+  async function ensureWasm() {
+    if (wasmMod) return wasmMod
+    try {
+      // Prefer global initialized by /wasm/init.auto.js
+      const w: any = (typeof window !== 'undefined') ? (window as any) : null
+      if (w && w.sampo_core_ready && w.sampo_core) {
+        const m = w.sampo_core
+        if (typeof m.audio_orch_init === 'function') {
+          wasmMod = m
+          dbg('wasm orchestrator loaded (from window.sampo_core)')
+          return wasmMod
+        }
+      }
+      // Import from public/wasm built by wasm-pack
+      const mod = await import('/wasm/sampo_core.js')
+      if (typeof (mod as any).default === 'function') { await (mod as any).default() }
+      // Sanity: check for one orchestrator fn
+      if (mod && typeof (mod as any).audio_orch_init === 'function') {
+        wasmMod = mod
+        dbg('wasm orchestrator loaded')
+        return wasmMod
+      }
+      try {
+        const keys = Object.keys(mod || {})
+        console.warn('[AUDIO][orchestrator] wasm loaded but audio_orch_* exports missing. Rebuild needed?', { keys })
+      } catch {}
+    } catch (e) {
+      console.warn('[AUDIO][orchestrator] wasm load skipped', e)
+    }
+    return null
+  }
+
+  function postCmdsJSON(p: MessagePort, json: string) {
+    if (!json) return
+    let arr: any[] = []
+    try { arr = JSON.parse(json) } catch {}
+    if (!Array.isArray(arr)) return
+    for (const m of arr) { try { p.postMessage(m) } catch {} }
+  }
 
   async function fetchAndLoad(bufferId: string, url: string) {
     dbg('fetchAndLoad start', bufferId, url)
@@ -47,29 +84,21 @@ export function useAudioOrchestrator(): Orchestrator {
     }
     dbg('port ready')
 
-    // create default buses with headroom
-    const buses = ['bgm', 'ambient', 'sfx', 'voice']
-    for (const id of buses) {
-      p.postMessage({ type: 'createBus', busId: id, options: { gainDb: -6 } })
-      dbg('createBus', id)
-    }
-    // Configure sidechain ducking: voice as key, attenuate bgm/ambient
-    p.postMessage({ type: 'setDucker', targetBusId: 'bgm', keyBusId: 'voice', params: { thresholdDb: -30, ratio: 6, attackMs: 15, releaseMs: 200, maxAttenDb: 12, makeupDb: 0 } })
-    p.postMessage({ type: 'setDucker', targetBusId: 'ambient', keyBusId: 'voice', params: { thresholdDb: -30, ratio: 6, attackMs: 15, releaseMs: 200, maxAttenDb: 12, makeupDb: 0 } })
-
-    // subscribe messages (duck back on voice end)
-    p.addEventListener('message', (e: MessageEvent) => {
-      const msg = e.data
-      console.debug('[AUDIO][engine msg]', msg)
-      if (msg?.type === 'trackEnded' && typeof msg.trackId === 'string' && msg.trackId.startsWith('voice-')) {
-        if (ducking) {
-          // ramp back over 150ms
-          p.postMessage({ type: 'setGain', scope: 'bus', id: 'bgm', gainDb: -6, rampMs: 150 })
-          p.postMessage({ type: 'setGain', scope: 'bus', id: 'ambient', gainDb: -6, rampMs: 150 })
-          ducking = false
-        }
+    // Bootstrap buses/duckers via Rust orchestrator (wasm)
+    const wasm = await ensureWasm()
+    if (wasm) {
+      try { postCmdsJSON(p, wasm.audio_orch_init()) } catch (e) { console.warn('[AUDIO][orchestrator] audio_orch_init failed', e) }
+      // Bridge engine messages back to wasm to emit follow-up cmds (e.g., ducking release)
+      const onMsg = (e: MessageEvent) => {
+        try {
+          const json = JSON.stringify(e.data ?? {})
+          const out = wasm.audio_orch_on_engine_message(json)
+          postCmdsJSON(p, out)
+        } catch {}
       }
-    })
+      try { p.addEventListener('message', onMsg) } catch {}
+      try { (p as any).start?.() } catch {}
+    }
 
     // pre-load a minimal set of assets (best-effort)
     try { await fetchAndLoad('bgm_01', '/audio/wavs/bgm_01.wav') } catch (e) { console.warn('[AUDIO][orchestrator] preload bgm_01 failed', e) }
@@ -89,15 +118,11 @@ export function useAudioOrchestrator(): Orchestrator {
     await init()
     const p = audio.port()
     if (!p) return
+    const wasm = await ensureWasm()
     // Ensure BGM asset is loaded (in case init preload failed)
     try { await fetchAndLoad('bgm_01', '/audio/wavs/bgm_01.wav') } catch (e) { console.warn('[AUDIO][orchestrator] startBGM: ensure bgm_01 failed', e) }
-    // create a track and schedule looped play
-    const id = 'bgm-root1'
-    dbg('startBGM createTrack', id)
-    p.postMessage({ type: 'createTrack', trackId: id, busId: 'bgm', assetId: 'bgm_01', options: { gainDb: 0, pan: 0 } })
-    dbg('startBGM schedulePlay', id)
-    p.postMessage({ type: 'schedulePlay', trackId: id, loop: { mode: 'seamless', start: 0, end: null } })
-    activeBgmTrackId = id
+    if (!wasm) { console.error('[AUDIO][orchestrator] wasm module missing; cannot startBGM'); return }
+    try { postCmdsJSON(p, wasm.audio_orch_start_bgm()) } catch (e) { console.warn('[AUDIO][orchestrator] audio_orch_start_bgm failed', e) }
   }
 
   async function playVoice(id?: string) {
@@ -108,32 +133,9 @@ export function useAudioOrchestrator(): Orchestrator {
     dbg('playVoice', assetId)
     // ensure loaded (ignore error)
     try { await fetchAndLoad(assetId, `/audio/wavs/${assetId}.wav`) } catch {}
-    const trackId = `voice-${Date.now()}`
-    p.postMessage({ type: 'createTrack', trackId, busId: 'voice', assetId, options: { gainDb: 0, pan: 0 } })
-    p.postMessage({ type: 'schedulePlay', trackId })
-    // core sidechain ducking handles attenuation (bgm/ambient keyed by voice)
-    ducking = true
-  }
-
-  function crossfadeTo(trackId: string, assetId: string, busId: string, loop: any, fadeMs = 250) {
-    const p = audio.port()
-    if (!p) return
-    dbg('crossfadeTo', { trackId, assetId, busId, fadeMs })
-    // Create new track muted
-    p.postMessage({ type: 'createTrack', trackId, busId, assetId, options: { gainDb: -60, pan: 0 } })
-    p.postMessage({ type: 'schedulePlay', trackId, loop })
-    // Fade in new
-    p.postMessage({ type: 'setGain', scope: 'track', id: trackId, gainDb: 0, rampMs: fadeMs })
-    // Fade out any other track in same bus and stop later (best-effort)
-    // Note: core未提供の列挙が無いので、便宜的に想定IDを落とす
-    const others = ['bgm-root1', 'bgm-root2', 'bgm-root3']
-    for (const o of others) {
-      if (o !== trackId) {
-        p.postMessage({ type: 'setGain', scope: 'track', id: o, gainDb: -60, rampMs: fadeMs })
-        setTimeout(() => p.postMessage({ type: 'stop', trackId: o }), fadeMs + 30)
-      }
-    }
-    activeBgmTrackId = trackId
+    const wasm = await ensureWasm()
+    if (!wasm) { console.error('[AUDIO][orchestrator] wasm module missing; cannot playVoice'); return }
+    try { postCmdsJSON(p, wasm.audio_orch_play_voice(assetId)) } catch (e) { console.warn('[AUDIO][orchestrator] audio_orch_play_voice failed', e) }
   }
 
   function onGeoUpdate(roadId: string | null, areaIds: string[]) {
@@ -141,41 +143,19 @@ export function useAudioOrchestrator(): Orchestrator {
     const p = audio.port()
     if (!p) return
     dbg('onGeoUpdate', { roadId, areaIds })
-    // area-triggered voices (one-shot)
-    if (areaIds.includes('start') && !startPlayed) {
-      void playVoice('voice_03_start'); startPlayed = true
-    }
-    if (areaIds.includes('goal') && !goalPlayed) {
-      void playVoice('voice_04_goal'); goalPlayed = true
-    }
-
-    // road-based BGM/interactive selection
-    if (roadId && roadId !== lastRoad) {
-      if (roadId === 'root1') {
-        // To root1: fade transition OK unless coming from root2 which must switch at loop end without fade
-        if (lastRoad === 'root2' && activeBgmTrackId) {
-          p.postMessage({ type: 'transition', trackId: activeBgmTrackId, at: 'loopEnd', toAssetId: 'bgm_01', loop: { mode: 'seamless', start: 0, end: null } })
-        } else {
-          crossfadeTo('bgm-root1', 'bgm_01', 'bgm', { mode: 'seamless', start: 0, end: null }, 300)
-        }
-      } else if (roadId === 'root2') {
-        crossfadeTo('bgm-root2', 'interactive_01', 'bgm', { mode: 'seamless', start: 0, end: null }, 200)
-      } else if (roadId === 'root3') {
-        // Always move to interactive_02 when entering root3.
-        // If a BGM track is active, schedule a loop-end transition for sample-accurate seam.
-        if (activeBgmTrackId) {
-          p.postMessage({ type: 'transition', trackId: activeBgmTrackId, at: 'loopEnd', toAssetId: 'interactive_02', loop: { mode: 'seamless', start: 0, end: null } })
-        } else {
-          // Fallback: if somehow no active track was tracked, start interactive_02 fresh
-          crossfadeTo('bgm-root3', 'interactive_02', 'bgm', { mode: 'seamless', start: 0, end: null }, 0)
-        }
+    try {
+      const w = wasmMod
+      if (w) {
+        const json = (w as any).audio_orch_on_geo_update(roadId ?? undefined, JSON.stringify(areaIds))
+        postCmdsJSON(p, json)
+      } else {
+        void ensureWasm().then((wasm) => {
+          if (!wasm) { console.error('[AUDIO][orchestrator] wasm module missing; onGeoUpdate ignored'); return }
+          const json = (wasm as any).audio_orch_on_geo_update(roadId ?? undefined, JSON.stringify(areaIds))
+          postCmdsJSON(p, json)
+        }).catch((e) => console.warn('[AUDIO][orchestrator] audio_orch_on_geo_update failed', e))
       }
-      // special: leaving root3 → stop at end: disable loop for the active BGM track if it represents root3 content
-      if (lastRoad === 'root3' && roadId !== 'root3' && activeBgmTrackId) {
-        p.postMessage({ type: 'setLoop', trackId: activeBgmTrackId, loop: { mode: 'none', start: 0, end: null } })
-      }
-      lastRoad = roadId
-    }
+    } catch (e) { console.warn('[AUDIO][orchestrator] audio_orch_on_geo_update failed', e) }
   }
 
   // ---- Generic Loop Utilities ----
@@ -189,10 +169,12 @@ export function useAudioOrchestrator(): Orchestrator {
     dbg('playLoop', { assetId, bus, trackId, loop: opts?.loop })
     // ensure asset
     try { await fetchAndLoad(assetId, `/audio/wavs/${assetId}.wav`) } catch {}
-    // create + schedule
-    p.postMessage({ type: 'createTrack', trackId, busId: bus, assetId, options: { gainDb, pan: 0 } })
-    const loop = opts?.loop ?? { mode: 'seamless', start: 0, end: null }
-    p.postMessage({ type: 'schedulePlay', trackId, loop })
+    const wasm = await ensureWasm()
+    if (!wasm) { console.error('[AUDIO][orchestrator] wasm module missing; cannot playLoop'); return trackId }
+    try {
+      const loopJson = opts?.loop ? JSON.stringify(opts?.loop) : undefined
+      postCmdsJSON(p, wasm.audio_orch_play_loop(assetId, bus, loopJson, gainDb, trackId))
+    } catch (e) { console.warn('[AUDIO][orchestrator] audio_orch_play_loop failed', e) }
     return trackId
   }
 
@@ -200,18 +182,35 @@ export function useAudioOrchestrator(): Orchestrator {
     const p = audio.port()
     if (!p) return
     dbg('setLoop', { trackId, loop })
-    if (loop.mode === 'none') {
-      p.postMessage({ type: 'setLoop', trackId, loop: { mode: 'none', start: 0, end: null } })
-    } else {
-      p.postMessage({ type: 'setLoop', trackId, loop: { mode: loop.mode, start: loop.start ?? 0, end: loop.end ?? null, crossfadeMs: loop.crossfadeMs } })
-    }
+    try {
+      const w = wasmMod
+      const json = JSON.stringify(loop.mode === 'none' ? { mode: 'none', start: 0, end: null } : { mode: loop.mode, start: loop.start ?? 0, end: loop.end ?? null, crossfadeMs: loop.crossfadeMs })
+      if (w) {
+        postCmdsJSON(p, (w as any).audio_orch_set_loop(trackId, json))
+      } else {
+        void ensureWasm().then((wasm) => {
+          if (!wasm) { console.error('[AUDIO][orchestrator] wasm module missing; cannot setLoop'); return }
+          postCmdsJSON(p, (wasm as any).audio_orch_set_loop(trackId, json))
+        }).catch((e) => console.warn('[AUDIO][orchestrator] audio_orch_set_loop failed', e))
+      }
+    } catch (e) { console.warn('[AUDIO][orchestrator] audio_orch_set_loop failed', e) }
   }
 
   function stopTrack(trackId: string) {
     const p = audio.port()
     if (!p) return
     dbg('stopTrack', trackId)
-    p.postMessage({ type: 'stop', trackId })
+    try {
+      const w = wasmMod
+      if (w) {
+        postCmdsJSON(p, (w as any).audio_orch_stop_track(trackId))
+      } else {
+        void ensureWasm().then((wasm) => {
+          if (!wasm) { console.error('[AUDIO][orchestrator] wasm module missing; cannot stopTrack'); return }
+          postCmdsJSON(p, (wasm as any).audio_orch_stop_track(trackId))
+        }).catch(() => {})
+      }
+    } catch {}
   }
 
   return {

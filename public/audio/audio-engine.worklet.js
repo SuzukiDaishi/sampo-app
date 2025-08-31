@@ -143,21 +143,19 @@ class AudioEngineProcessor extends AudioWorkletProcessor {
 
   _onMessage(msg) {
     this._dbg('onMessage', { type: msg && msg.type })
-    // Local debug sender; unique name to avoid collisions
-    const __dbg = (m) => { try { this.port && this.port.postMessage && this.port.postMessage(m) } catch (_) {} }
     switch (msg?.type) {
       case 'setEngineMode': {
         const mode = (msg && msg.mode) || 'js'
         this.useWasmMixer = mode === 'wasm'
-        __dbg({ type: 'debug', msg: 'engineMode', mode: this.useWasmMixer ? 'wasm' : 'js' })
+        this._dbg('engineMode', { mode: this.useWasmMixer ? 'wasm' : 'js' })
         break;
       }
       case 'init': {
-        __dbg({ type: 'debug', msg: 'init received', sr: this.sr, blockSize: this.blockSize });
+        this._dbg('init received', { sr: this.sr, blockSize: this.blockSize });
         // kick wasm load but don't block ready
         // eslint-disable-next-line @typescript-eslint/no-floating-promises
         this._ensureWasm();
-        __dbg({ type: 'ready', sampleRate: this.sr, blockSize: this.blockSize });
+        try { this.port.postMessage({ type: 'ready', sampleRate: this.sr, blockSize: this.blockSize }) } catch (_) {}
         break;
       }
       case 'loadBuffer': {
@@ -165,7 +163,7 @@ class AudioEngineProcessor extends AudioWorkletProcessor {
         if (!bufferId || !channels || !Array.isArray(channels)) return;
         this.buffers.set(bufferId, { sampleRate, channels });
         const len = channels && channels[0] ? channels[0].length : 0
-        __dbg({ type: 'bufferLoaded', bufferId, sampleRate, channels: channels.length || 0, length: len });
+        this._dbg('bufferLoaded', { bufferId, sampleRate, channels: channels.length || 0, length: len });
         // Register to wasm if available
         // eslint-disable-next-line @typescript-eslint/no-floating-promises
         (async () => {
@@ -175,7 +173,7 @@ class AudioEngineProcessor extends AudioWorkletProcessor {
               for (const ch of channels) arr.push(ch);
               this.wasm.audio_register_asset(bufferId, sampleRate, arr);
             } catch (e) {
-              __dbg({ type: 'debug', msg: 'audio_register_asset failed', error: String(e) })
+              this._dbg('audio_register_asset failed', { error: String(e) })
             }
           }
         })();
@@ -192,7 +190,7 @@ class AudioEngineProcessor extends AudioWorkletProcessor {
           ducker: undefined
         });
         if (options?.lpf?.enabled) this._updateLPF(busId, options.lpf.cutoffHz ?? 1000, options.lpf.q ?? 0.707);
-        __dbg({ type: 'debug', msg: 'createBus', busId, gainDb })
+        this._dbg('createBus', { busId, gainDb })
         break;
       }
       case 'createTrack': {
@@ -221,7 +219,7 @@ class AudioEngineProcessor extends AudioWorkletProcessor {
           pendingSwitchAt: null,
           markers: []
         });
-        __dbg({ type: 'debug', msg: 'createTrack', trackId, busId, assetId, sr: buf.sampleRate, len: buf.channels[0]?.length || 0 })
+        this._dbg('createTrack', { trackId, busId, assetId, sr: buf.sampleRate, len: buf.channels[0]?.length || 0 })
         // wasm create
         // eslint-disable-next-line @typescript-eslint/no-floating-promises
         (async () => {
@@ -237,7 +235,7 @@ class AudioEngineProcessor extends AudioWorkletProcessor {
         const w = Number.isFinite(whenSamples) ? Math.max(0, whenSamples|0) : this.currentSample;
         this.events.push({ type: 'start', when: w, trackId, offsetSamples: (offsetSamples|0) >>> 0, loop: loop ?? null });
         this._dbg('queue schedulePlay', { when: w })
-        __dbg({ type: 'debug', msg: 'schedulePlay', trackId, when: w })
+        this._dbg('schedulePlay', { trackId, when: w })
         // wasm schedule (immediate on wasm side)
         // eslint-disable-next-line @typescript-eslint/no-floating-promises
         (async () => {
@@ -257,7 +255,7 @@ class AudioEngineProcessor extends AudioWorkletProcessor {
         const w = Number.isFinite(whenSamples) ? Math.max(0, whenSamples|0) : this.currentSample;
         this.events.push({ type: 'stop', when: w, trackId });
         this._dbg('queue stop', { when: w })
-        __dbg({ type: 'debug', msg: 'stop', trackId, when: w })
+        this._dbg('stop', { trackId, when: w })
         break;
       }
       case 'setGain': {
@@ -273,13 +271,13 @@ class AudioEngineProcessor extends AudioWorkletProcessor {
           const t = id ? this.tracks.get(id) : null;
           if (t) t.gain.setTarget(target, samples);
         }
-        __dbg({ type: 'debug', msg: 'setGain', scope, id, gainDb, rampMs })
+        this._dbg('setGain', { scope, id, gainDb, rampMs })
         break;
       }
       case 'setLPF': {
         const { scope, id, cutoffHz, rampMs } = msg;
         if (scope === 'bus') this._updateLPF(id, cutoffHz ?? 0, 0.707);
-        __dbg({ type: 'debug', msg: 'setLPF', scope, id, cutoffHz })
+        this._dbg('setLPF', { scope, id, cutoffHz })
         break;
       }
       case 'setDucker': {
@@ -306,7 +304,7 @@ class AudioEngineProcessor extends AudioWorkletProcessor {
             env: 0,
             gain: 1
           };
-          __dbg({ type: 'debug', msg: 'setDucker', targetBusId, keyBusId, thresholdDb: thDb, ratio })
+          this._dbg('setDucker', { targetBusId, keyBusId, thresholdDb: thDb, ratio })
         }
         // wasm setDucker
         // eslint-disable-next-line @typescript-eslint/no-floating-promises
@@ -322,7 +320,7 @@ class AudioEngineProcessor extends AudioWorkletProcessor {
         const t = this.tracks.get(trackId);
         if (t && Array.isArray(markersSamples)) {
           t.markers = markersSamples.filter(n => Number.isFinite(n) && n >= 0).map(n => n|0).sort((a,b)=>a-b);
-        __dbg({ type: 'debug', msg: 'setMarkers', trackId, count: t.markers.length })
+        this._dbg('setMarkers', { trackId, count: t.markers.length })
         }
         // wasm setMarkers
         // eslint-disable-next-line @typescript-eslint/no-floating-promises
@@ -372,7 +370,7 @@ class AudioEngineProcessor extends AudioWorkletProcessor {
         if (!t) break;
         if (at === 'loopEnd') {
           t.pendingSwitch = { assetId: toAssetId, loop: loop ?? null };
-          __dbg({ type: 'debug', msg: 'transition@loopEnd', trackId, toAssetId })
+          this._dbg('transition@loopEnd', { trackId, toAssetId })
         } else if (at === 'now') {
           const nb = this.buffers.get(toAssetId);
           if (nb) {
@@ -380,7 +378,7 @@ class AudioEngineProcessor extends AudioWorkletProcessor {
             t.step = nb.sampleRate / this.sr;
             t.readPos = (loop?.start ?? 0) * (nb.sampleRate / this.sr);
             t.loop = loop ?? null;
-            __dbg({ type: 'debug', msg: 'transition@now', trackId, toAssetId })
+            this._dbg('transition@now', { trackId, toAssetId })
           }
         } else if (at === 'nextMarker') {
           if (Array.isArray(t.markers) && t.markers.length) {
@@ -389,11 +387,11 @@ class AudioEngineProcessor extends AudioWorkletProcessor {
             if (next != null) {
               t.pendingSwitchAt = next;
               t.pendingSwitch = { assetId: toAssetId, loop: loop ?? null };
-              __dbg({ type: 'debug', msg: 'transition@nextMarker', trackId, toAssetId, atSample: next })
+              this._dbg('transition@nextMarker', { trackId, toAssetId, atSample: next })
             } else {
               // fallback to loopEnd
               t.pendingSwitch = { assetId: toAssetId, loop: loop ?? null };
-              __dbg({ type: 'debug', msg: 'transition@nextMarker fallback loopEnd', trackId, toAssetId })
+              this._dbg('transition@nextMarker fallback loopEnd', { trackId, toAssetId })
             }
           }
         }

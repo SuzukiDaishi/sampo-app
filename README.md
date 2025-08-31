@@ -18,18 +18,16 @@
 探索の途中にはポータルや秘密の場所があり、世界観の断片を感じられます。
 最終的には「**散歩そのものが冒険だった**」と実感できるように設計されます。
 
-### 現在の開発段階
+### 現在の開発段階（2025-08 更新）
 
-**このリポジトリは上記アプリの技術基盤（地図表示・プレイヤー移動・GeoJSON描画）部分です。**
+このリポジトリは、地図表示・プレイヤー移動・GeoJSON描画に加えて、Rust→Wasm ベースのオーディオコアと、ゲーム進行ルール（オーケストレーション）のRust実装を含みます。
 
-将来的に以下の機能が追加予定：
-- 📍 GPS/位置情報連携
-- 🎵 位置ベース音楽・環境音システム
-- 🗣️ ボイス・イベント発火システム  
-- 🎯 ルート逸脱検知・音響フィードバック
-- 🌟 ポータル・秘密エリア・分岐システム
-- 🌤️ 天気・時間帯連動
-- 📱 PWA・オフライン対応
+進捗のハイライト：
+- ✅ Canvas/MapLibre の地図デバッグ環境
+- ✅ Rustコア（GeoJSON取り込みとクエリ）→ Wasm 公開
+- ✅ AudioWorklet ベースのミキサ（JS）と Rust DSP（Wasm）連携
+- ✅ オーディオ・オーケストレーション（道路・エリアに応じたBGM/ボイス）は Rust 側（game.rs）に移行
+- 🔜 GPS/位置情報連携、PWA、ストーリー/分岐ルール
 
 ## 主な特徴
 
@@ -156,13 +154,24 @@ sampo-app/
 │   ├── CanvasMapView.vue      # Canvas版マップコンポーネント
 │   └── MapView.vue            # MapLibre版（代替表示）
 ├── composables/
-│   └── usePlayer.ts           # プレイヤー状態管理（ズーム連動の移動幅）
+│   ├── usePlayer.ts           # プレイヤー状態管理（ズーム連動の移動幅）
+│   ├── useSampoCore.ts        # Rust Wasm コアのラッパ（GeoJSON/クエリ）
+│   ├── useAudioEngine.ts      # AudioWorklet プラグインへの薄いブリッジ
+│   └── useAudioOrchestrator.ts# Rustオーケストレータを呼ぶ最小ラッパ
 ├── app/pages/
 │   ├── index.vue              # ホームページ
 │   └── walk.vue               # マップページ
+├── plugins/
+│   └── audio.client.ts        # AudioWorklet 初期化とポート提供（$audio）
 ├── public/routes/
 │   ├── level.geojson          # サンプルGeoJSONデータ
 │   └── README.md              # GeoJSONデータの作成方法
+├── public/audio/
+│   └── audio-engine.worklet.js# ミキサ（JS）+ Wasm連携のWorklet本体
+├── public/wasm/
+│   ├── sampo_core_bg.wasm     # wasm-pack の成果物
+│   ├── sampo_core.js          # ESMラッパ
+│   └── init.auto.js           # 自動初期化（window.sampo_core に公開）
 └── server/api/routes/
     └── [id].get.ts            # GeoJSONファイル読み込みAPI
 ```
@@ -170,16 +179,19 @@ sampo-app/
 ## 技術仕様
 
 ### フロントエンド
-- **フレームワーク**: Nuxt 4 + Vue 3
-- **レンダリング**: HTML5 Canvas 2D Context（MapLibre 代替あり）
-- **地理計算**: Turf.js 7.2.0
-- **TypeScript**: 完全対応
+- フレームワーク: Nuxt 4 + Vue 3 / TypeScript
+- レンダリング: HTML5 Canvas 2D（MapLibre 代替）
+- 地理計算: Rust(geo/geojson)を主とし、必要に応じてTurf.js
 
-### マップエンジン
-- **タイル配信**: OpenStreetMap
-- **座標系**: WGS84 (EPSG:4326) → Web Mercator (EPSG:3857)
-- **描画**: Canvas 2D API
-- **キャッシュ**: Map<string, HTMLImageElement> によるタイル管理
+### オーディオ（重要）
+- 初期化: `plugins/audio.client.ts`（AudioContext + AudioWorkletNode）
+- Worklet: `public/audio/audio-engine.worklet.js`
+  - JSミキサ（トラック/バス/ループ/ゲイン/LPF/ducking）
+  - Wasm（Rust）コアと連携（`audio_*` 系関数を呼び出し）
+- オーケストレーション（ルール）: Rust `rust/sampo_core/src/game.rs`
+  - `audio_orch_init/start_bgm/play_voice/on_geo_update/...` をWasmで公開
+  - TS側は `composables/useAudioOrchestrator.ts` から呼び、返ってきたコマンド配列をMessagePortへ `postMessage`
+- アセットデコード: TS側で `AudioContext.decodeAudioData` → Workletへ buffer を転送
 
 ## カスタムGeoJSONルートの追加
 
@@ -292,8 +304,8 @@ ctx.strokeStyle = '#00aa00'
 - [ ] 実世界座標とGeoJSONルートの照合
 
 ### フェーズ2: オーディオシステム基盤
-- [ ] 位置ベース音楽・環境音再生
-- [ ] ボイス・効果音システム
+- [x] 位置ベース音楽・環境音再生（道路/エリアで切替）
+- [x] ボイス・効果音システム（start/goal等）
 - [ ] 音響距離感・方向感の実装
 
 ### フェーズ3: ゲーム要素
@@ -371,11 +383,21 @@ npm run wasm:build
 npm run dev
 ```
 
-将来的には、イベント／音声再生（BGMレイヤ、効果音、ボイス）、状態遷移、分岐などのメインロジックを Rust 側に追加予定です。
+### オーディオ・オーケストレーション（Rust）
+`rust/sampo_core/src/game.rs` に、ゲーム進行に伴う音声制御（バス/ダッカー/ループ/遷移/ボイス発火）を実装しています。
 
-現在進行中の変更点
-- ループ（seamless/xfade）や再生制御を Rust→Wasm に段階移行中。TS 側はフラグ/コマンドを渡すだけの設計に寄せています。
-- Web はデバッグ用のホストであり、製品版では Rust コアをモバイルへ再利用する方針です。
+公開関数（Wasm）
+- `audio_orch_init() -> string`:
+  - `createBus`（bgm/ambient/sfx/voice）と `setDucker`（voiceをkeyにbgm/ambientを抑える）等のコマンド配列（JSON文字列）を返します。
+- `audio_orch_start_bgm() -> string`:
+  - `bgm_01` を `bgm-root1` としてループ再生するコマンドを返します。
+- `audio_orch_on_geo_update(roadId?: string, areaIdsJson: string) -> string`:
+  - エリア入場に応じたボイス、道路遷移に応じたBGM/インタラクティブ切替（クロスフェード/ループ終端遷移）を返します。
+- `audio_orch_play_voice(id?: string) -> string` / `audio_orch_play_loop(...) -> string` / `audio_orch_set_loop(...) -> string` / `audio_orch_stop_track(...) -> string`
+- `audio_orch_on_engine_message(msgJson: string) -> string`:
+  - Workletからの `trackEnded`（voice-）などを受けて、ダッキング解除のコマンドを返します。
+
+TS 側は `composables/useAudioOrchestrator.ts` が上記関数を呼び、返却された配列の各オブジェクトをそのまま `MessagePort.postMessage(...)` しています。アセットのロード/デコードのみTS側で実施します（WasmはファイルIO不可のため）。
 
 ### 初期化と読み込み（Nuxt側）
 - Wasm生成物は `public/wasm/` に配置（`npm run wasm:build`）
@@ -387,6 +409,21 @@ npm run dev
 - HUDに以下を表示（`components/CanvasMapView.vue`）
   - 現在座標／向き／ズーム／地図ベアリング
   - Nearest road: 近い道IDと線までの最短距離（m）
+### オーディオの利用手順（開発時）
+1) `npm run wasm:build` で Wasm 成果物を `public/wasm/` に生成
+2) `npm run dev` で起動（Nuxtのheadから `/wasm/init.auto.js` が自動ロード）
+3) `CanvasMapView.vue` の「Start Audio」をクリックすると AudioContext が初期化され、BGM/ボイスが再生されます
+
+Rust 側のルール（道路/エリアに応じたBGM切替等）は `rust/sampo_core/src/game.rs` の `audio_orch_on_geo_update` を参照してください。
+
+### オーディオ関連
+- 「wasm module missing」「audio_orch_* exports missing」
+  - Wasmが古い可能性があります。`npm run wasm:build` を実行し、開発サーバを再起動・ブラウザをハードリロードしてください。
+- AudioWorklet 内で `__dbg(...) is not a function`
+  - `public/audio/audio-engine.worklet.js` を更新済みです。ブラウザを再読み込みし、AudioContextを作り直してください。
+- WASM RuntimeError: `panic_already_borrowed` などの `unreachable`
+  - Rust 側の `audio_orch_on_geo_update` 内での再入借用を解消済みです。最新の Wasm に更新（`wasm:build`）して試してください。
+
   - Area IDs: 現在位置が含まれる全エリアID
 - プレイヤー移動時に約120ms間隔で再計算してWasmに問い合わせます
 - ルートデータ変更時は再初期化→再計算します
