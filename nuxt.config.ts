@@ -17,6 +17,8 @@ export default defineNuxtConfig({
     dirs: ['~/components']
   },
 
+  // Plugins are auto-registered from the ./plugins directory.
+
   app: {
     head: {
       script: [

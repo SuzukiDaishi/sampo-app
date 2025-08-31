@@ -4,6 +4,8 @@ use geojson::{Feature, GeoJson, Value};
 use serde::Deserialize;
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
+#[cfg(target_arch = "wasm32")]
+use js_sys::{Array as JsArray, Float32Array};
 
 #[derive(Debug, Clone)]
 struct Road {
@@ -23,8 +25,212 @@ struct State {
     areas: Vec<Area>,
 }
 
+thread_local! { static STATE: std::cell::RefCell<State> = std::cell::RefCell::new(State::default()); }
+
+// Audio engine core module (pure Rust). Wasm wrappers will be introduced separately.
+mod audio;
+#[cfg(feature = "ffi")]
+mod audio_ffi;
+
+// ----- Geometry / Query Core -----
+
+#[derive(Default)]
+struct AudioState {
+    sr: f32,
+    assets: HashMap<String, AudioAsset>,
+    tracks: HashMap<String, AudioTrack>,
+    duckers: Vec<Ducker>,
+}
+
+#[derive(Clone)]
+struct AudioAsset {
+    sr: f32,
+    ch: Vec<Vec<f32>>, // [channel][sample]
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoopMode { None, Seamless, Xfade }
+
+#[derive(Clone, Copy)]
+struct LoopCfg {
+    mode: LoopMode,
+    start: usize,
+    end: Option<usize>,
+    xfade: usize,
+}
+
+impl Default for LoopCfg {
+    fn default() -> Self {
+        LoopCfg { mode: LoopMode::None, start: 0, end: None, xfade: 0 }
+    }
+}
+
+#[derive(Clone)]
+struct AudioTrack {
+    id: String,
+    bus: String,
+    asset_id: String,
+    pos: f64,
+    step: f64,
+    gain: f32,
+    pan_l: f32,
+    pan_r: f32,
+    playing: bool,
+    loop_cfg: LoopCfg,
+    markers: Vec<usize>,
+    pending_switch: Option<(String, LoopCfg)>,
+    pending_switch_at: Option<usize>,
+}
+
 thread_local! {
-    static STATE: std::cell::RefCell<State> = std::cell::RefCell::new(State::default());
+    static AUDIO: std::cell::RefCell<AudioState> = std::cell::RefCell::new(AudioState::default());
+}
+
+fn pan_coeffs(pan: f32) -> (f32, f32) {
+    // equal-power pan
+    let angle = (pan + 1.0) * 0.25 * std::f32::consts::PI;
+    (angle.cos(), angle.sin())
+}
+
+fn loop_cfg(mode: &str, start: u32, end: i32, xfade_ms: u32, sr: f32) -> LoopCfg {
+    let end_opt = if end >= 0 { Some(end as usize) } else { None };
+    let m = match mode {
+        "seamless" => LoopMode::Seamless,
+        "xfade" => LoopMode::Xfade,
+        _ => LoopMode::None,
+    };
+    let xfade = if m == LoopMode::Xfade { ((xfade_ms as f32) * sr / 1000.0).max(0.0) as usize } else { 0 };
+    LoopCfg { mode: m, start: start as usize, end: end_opt, xfade }
+}
+
+#[derive(Clone)]
+struct Ducker {
+    target_bus: String,
+    key_bus: String,
+    threshold_db: f32,
+    threshold_lin: f32,
+    ratio: f32,
+    attack: f32,
+    release: f32,
+    max_atten_db: f32,
+    makeup_lin: f32,
+    env: f32,
+    gr: f32,
+}
+
+#[wasm_bindgen]
+pub fn audio_init(sample_rate: f32) { crate::audio::engine_init(sample_rate) }
+
+#[wasm_bindgen]
+pub fn audio_register_asset(id: &str, sample_rate: f32, channels: JsArray) -> bool {
+    let mut ch_vec: Vec<Vec<f32>> = Vec::new();
+    for v in channels.values() {
+        let v = v.unwrap_or(JsValue::UNDEFINED);
+        let arr = Float32Array::from(v);
+        let mut dst = vec![0.0f32; arr.length() as usize];
+        arr.copy_to(&mut dst[..]);
+        ch_vec.push(dst);
+    }
+    crate::audio::engine_register_asset(id, sample_rate, ch_vec)
+}
+
+#[wasm_bindgen]
+pub fn audio_create_track(track_id: &str, asset_id: &str, pan: f32, gain_db: f32) -> bool {
+    crate::audio::engine_create_track(track_id, asset_id, pan, gain_db)
+}
+
+#[wasm_bindgen]
+pub fn audio_create_track_bus(track_id: &str, bus: &str, asset_id: &str, pan: f32, gain_db: f32) -> bool {
+    crate::audio::engine_create_track_bus(track_id, bus, asset_id, pan, gain_db)
+}
+
+#[wasm_bindgen]
+pub fn audio_schedule_play(track_id: &str, offset_samples: u32, loop_mode: &str, loop_start: u32, loop_end: i32, xfade_ms: u32) -> bool {
+    crate::audio::engine_schedule_play(track_id, offset_samples, loop_mode, loop_start, loop_end, xfade_ms)
+}
+
+#[wasm_bindgen]
+pub fn audio_set_loop(track_id: &str, loop_mode: &str, loop_start: u32, loop_end: i32, xfade_ms: u32) -> bool {
+    crate::audio::engine_set_loop(track_id, loop_mode, loop_start, loop_end, xfade_ms)
+}
+
+fn sample_pair(asset: &AudioAsset, idx: usize, frac: f64) -> (f32, f32) {
+    let ch0 = &asset.ch[0];
+    let ch1 = if asset.ch.len() > 1 { &asset.ch[1] } else { &asset.ch[0] };
+    let i0 = idx;
+    let i1 = idx + 1;
+    let s0l = ch0.get(i0).copied().unwrap_or(0.0);
+    let s1l = ch0.get(i1).copied().unwrap_or(0.0);
+    let s0r = ch1.get(i0).copied().unwrap_or(0.0);
+    let s1r = ch1.get(i1).copied().unwrap_or(0.0);
+    let l = (s1l - s0l) as f64 * frac + s0l as f64;
+    let r = (s1r - s0r) as f64 * frac + s0r as f64;
+    (l as f32, r as f32)
+}
+
+#[wasm_bindgen]
+pub fn audio_set_ducker(target_bus: &str, key_bus: &str, threshold_db: f32, ratio: f32, attack_ms: f32, release_ms: f32, max_atten_db: f32, makeup_db: f32) {
+    crate::audio::engine_set_ducker(target_bus, key_bus, threshold_db, ratio, attack_ms, release_ms, max_atten_db, makeup_db)
+}
+
+#[wasm_bindgen]
+pub fn audio_process_into(out_l: &mut [f32], out_r: &mut [f32]) -> u32 {
+    crate::audio::engine_process_into(out_l, out_r)
+}
+
+#[wasm_bindgen]
+pub fn audio_set_markers(track_id: &str, markers: JsArray) -> bool {
+    AUDIO.with(|a| {
+        let mut st = a.borrow_mut();
+        let t = match st.tracks.get_mut(track_id) { Some(x) => x, None => return false };
+        let mut v: Vec<usize> = Vec::new();
+        for it in markers.values() {
+            let vj = it.unwrap_or(JsValue::UNDEFINED);
+            if let Some(n) = vj.as_f64() { if n >= 0.0 { v.push(n as usize) } }
+        }
+        v.sort_unstable();
+        v.dedup();
+        t.markers = v;
+        true
+    })
+}
+
+#[wasm_bindgen]
+pub fn audio_transition(track_id: &str, at: &str, to_asset_id: &str, loop_mode: &str, loop_start: u32, loop_end: i32, xfade_ms: u32) -> bool {
+    AUDIO.with(|a| {
+        // 先に対象アセットのsrを取得
+        let asset_sr_opt = { let st = a.borrow(); st.assets.get(to_asset_id).map(|asst| asst.sr) };
+        let asset_sr = match asset_sr_opt { Some(v) => v, None => return false };
+        let lc = loop_cfg(loop_mode, loop_start, loop_end, xfade_ms, asset_sr);
+        let mut st = a.borrow_mut();
+        if let Some(t) = st.tracks.get_mut(track_id) {
+            match at {
+                "now" => {
+                    t.asset_id = to_asset_id.to_string();
+                    t.loop_cfg = lc;
+                    t.pos = lc.start as f64;
+                    t.pending_switch = None;
+                    t.pending_switch_at = None;
+                }
+                "loopEnd" => {
+                    t.pending_switch = Some((to_asset_id.to_string(), lc));
+                    t.pending_switch_at = None;
+                }
+                "nextMarker" => {
+                    let idx = t.pos.floor() as usize;
+                    if let Some(next) = t.markers.iter().copied().find(|&m| m > idx) {
+                        t.pending_switch = Some((to_asset_id.to_string(), lc));
+                        t.pending_switch_at = Some(next);
+                    } else {
+                        t.pending_switch = Some((to_asset_id.to_string(), lc));
+                        t.pending_switch_at = None;
+                    }
+                }
+                _ => {}
+            }
+            true
+        } else { false }
+    })
 }
 
 #[derive(Deserialize)]

@@ -43,6 +43,10 @@
         </div>
         <div class="wasm-row"><strong>Area IDs:</strong> {{ currentAreaIds.length ? currentAreaIds.join(', ') : '-' }}</div>
       </div>
+      <div class="audio-controls">
+        <button class="audio-btn" @click="startAudio" :disabled="audioReady">Start Audio</button>
+        <button class="audio-btn" @click="playVoice" :disabled="!audioReady">Play Voice</button>
+      </div>
     </div>
   </div>
 </template>
@@ -51,6 +55,7 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { usePlayer } from '../composables/usePlayer'
 import { useSampoCore } from '../composables/useSampoCore'
+import { useAudioOrchestrator } from '../composables/useAudioOrchestrator'
 
 const props = defineProps<{ routeData?: GeoJSON.GeoJSON }>()
 
@@ -72,6 +77,30 @@ const nearestRoadDist = ref<number | null>(null)
 const currentAreaIds = ref<string[]>([])
 const wasmReady = ref(false)
 const core = useSampoCore()
+
+// Audio orchestrator
+const audio = useAudioOrchestrator()
+const audioReady = ref(false)
+async function startAudio() {
+  try {
+    console.info('[AUDIO][ui] startAudio clicked')
+    await audio.init()
+    console.info('[AUDIO][ui] init done, starting BGM')
+    await audio.startBGM()
+    audioReady.value = true
+    console.info('[AUDIO][ui] BGM started')
+  } catch (e) {
+    console.warn('[AUDIO] init/start failed', e)
+  }
+}
+async function playVoice() {
+  try {
+    console.info('[AUDIO][ui] playVoice clicked')
+    await audio.playVoice('voice_03_start')
+  } catch (e) {
+    console.warn('[AUDIO] playVoice failed', e)
+  }
+}
 
 async function updateWasmQuery() {
   try {
@@ -505,6 +534,10 @@ function scheduleQuery() {
   queryTimer = window.setTimeout(async () => {
     queryTimer = null
     await updateWasmQuery()
+    // Update audio logic with geo context
+    try {
+      audio.onGeoUpdate(nearestRoadId.value, currentAreaIds.value)
+    } catch {}
   }, 120)
 }
 
@@ -617,5 +650,23 @@ watch(
 }
 .wasm-row {
   margin-top: 2px;
+}
+
+.audio-controls {
+  margin-top: 8px;
+  display: flex;
+  gap: 6px;
+}
+.audio-btn {
+  padding: 4px 8px;
+  font-size: 12px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+}
+.audio-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 </style>
